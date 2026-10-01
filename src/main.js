@@ -3,6 +3,7 @@ import { heightAt, buildWorld } from './road.js';
 import { buildCar } from './car.js';
 import { buildDriver } from './driver.js';
 import { loadAssets } from './assets.js';
+import { buildGod } from './god.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
@@ -34,22 +35,34 @@ const assets = await loadAssets(renderer, (f) => { goEl.textContent = `Loading..
 goEl.textContent = goText;
 const world = buildWorld(scene, renderer, assets);
 
-// ---- drunk vision: wobble, double vision, tunnel vignette (only runs while drunk) ----
+// ---- drunk vision (buzz 0..4) ----------------------------------------------------------------
+// uAmt (buzz ~0.1-1): wobble, double vision, edge smear, tunnel vignette.
+// uTrip (buzz 1.5-3): stronger warp, breathing zoom, colour fringes, hue cycling.
+// uKal: mirror-world episodes, uBlack: blackouts (both buzz 2.5+, driven by drunkEpisodes()).
+const DRUNK_MAX = 4;
 const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 }));
 composer.addPass(new RenderPass(scene, camera));
 const drunkPass = new ShaderPass({
-  uniforms: { tDiffuse: { value: null }, uAmt: { value: 0 }, uTime: { value: 0 } },
+  uniforms: { tDiffuse: { value: null }, uAmt: { value: 0 }, uTime: { value: 0 }, uTrip: { value: 0 }, uKal: { value: 0 }, uBlack: { value: 0 } },
   vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
   fragmentShader: `
-    uniform sampler2D tDiffuse; uniform float uAmt, uTime; varying vec2 vUv;
+    uniform sampler2D tDiffuse; uniform float uAmt, uTime, uTrip, uKal, uBlack; varying vec2 vUv;
+    vec3 hue(vec3 c, float a) { const vec3 k = vec3(0.57735); float ca = cos(a); return c * ca + cross(k, c) * sin(a) + k * dot(k, c) * (1.0 - ca); }
     void main() {
-      float a = uAmt;
-      vec2 uv = vUv + vec2(sin(vUv.y * 7.0 + uTime * 1.3), cos(vUv.x * 5.0 + uTime * 1.1)) * 0.009 * a;
-      vec2 off = vec2(sin(uTime * 0.7), cos(uTime * 0.93) * 0.4) * 0.035 * a;          // the world splits in two
+      float a = uAmt, t = uTrip;
+      vec2 uv = vUv;
+      if (uKal > 0.5) uv.x = 0.5 + abs(uv.x - 0.5);                                     // the world folds in half
+      uv = (uv - 0.5) * (1.0 - 0.05 * t * sin(uTime * 2.1)) + 0.5;                      // breathing
+      uv += vec2(sin(uv.y * 7.0 + uTime * 1.3), cos(uv.x * 5.0 + uTime * 1.1)) * (0.009 * a + 0.025 * t);
+      vec2 off = vec2(sin(uTime * 0.7), cos(uTime * 0.93) * 0.4) * (0.035 * a + 0.05 * t);   // the world splits in two
       vec4 c = mix(texture2D(tDiffuse, uv), texture2D(tDiffuse, uv + off), 0.45 * clamp(a * 1.6, 0.0, 1.0));
-      vec2 d = vUv - 0.5;                                                                // smear toward the edges
-      c = mix(c, (texture2D(tDiffuse, uv - d * 0.03 * a) + texture2D(tDiffuse, uv - d * 0.06 * a)) * 0.5, 0.5 * a);
-      c.rgb *= mix(1.0, smoothstep(0.85, 0.2, length(d)), 0.75 * a);                    // tunnel vision
+      vec2 d = vUv - 0.5;
+      c = mix(c, (texture2D(tDiffuse, uv - d * 0.03 * a) + texture2D(tDiffuse, uv - d * 0.06 * a)) * 0.5, 0.5 * a);   // smear toward the edges
+      c.r = mix(c.r, texture2D(tDiffuse, uv + d * 0.03).r, t);                          // colour fringes
+      c.b = mix(c.b, texture2D(tDiffuse, uv - d * 0.03).b, t);
+      c.rgb = mix(c.rgb, hue(c.rgb, uTime * 1.7 + length(d) * 7.0), 0.65 * t);           // everything goes rainbow
+      c.rgb *= 1.0 - smoothstep(0.2, 0.85 - 0.25 * t, length(d)) * 0.75 * a;           // tunnel vision
+      c.rgb *= 1.0 - uBlack;
       gl_FragColor = c;
     }`,
 });
@@ -155,10 +168,10 @@ const smoke = Array.from({ length: 180 }, () => {
   return { s, v: new THREE.Vector3(), life: 0, max: 1, s0: 0.1, s1: 0.5, a: 0.5 };
 });
 let smokeHead = 0;
-function puffSmoke(pos, vel, spread, n, { life = 2.5, s0 = 0.05, s1 = 0.5, a = 0.45 } = {}) {
+function puffSmoke(pos, vel, spread, n, { life = 2.5, s0 = 0.05, s1 = 0.5, a = 0.45, color = 0xdedbd6 } = {}) {
   for (let i = 0; i < n; i++) {
     const p = smoke[smokeHead++ % smoke.length];
-    p.s.position.copy(pos); p.s.visible = true;
+    p.s.position.copy(pos); p.s.visible = true; p.s.material.color.set(color);
     p.v.set(vel.x + (Math.random() - 0.5) * spread, vel.y + (Math.random() - 0.5) * spread, vel.z + (Math.random() - 0.5) * spread);
     p.life = 0; p.max = life * (0.8 + Math.random() * 0.4); p.s0 = s0; p.s1 = s1 * (0.8 + Math.random() * 0.4); p.a = a;
   }
@@ -206,7 +219,7 @@ function updateShards(dt) {
 const v3 = new THREE.Vector3(), v3b = new THREE.Vector3(), qTmp = new THREE.Quaternion();
 const driver = buildDriver({ ...car, body: car.cabin }, {
   say,
-  onSip: (amount) => { SFX.gulp(); S.drunk = Math.min(1.5, S.drunk + amount * 0.6); },
+  onSip: (amount) => { SFX.gulp(); S.drunk = Math.min(DRUNK_MAX, S.drunk + amount * 0.6); },
   onAhh: () => { SFX.ahh(); if (Math.random() < 0.15 + S.drunk * 0.3) setTimeout(() => { SFX.burp(); say('*BUUURP*', 1.2); }, 1300); },
   onAshDrop: () => SFX.ash(),
   onAshLand: (pos) => puffSmoke(pos, v3b.set(0, 0.15, 0), 0.15, 3, { life: 1.2, s0: 0.01, s1: 0.08, a: 0.3 }),
@@ -225,6 +238,27 @@ const driver = buildDriver({ ...car, body: car.cabin }, {
   onWisp: (pos) => puffSmoke(pos, v3b.set(0, 0.2, 0), 0.03, 1, { life: 1.6, s0: 0.01, s1: 0.1, a: 0.22 }),
   carVel: () => new THREE.Vector3(S.vx, 0, S.vz),
 }, assets.avatar, scene);
+
+// ---- God: Alt+F+4 summons Him; He keeps pace in front of the car and restocks you through the roof ----
+const holyLight = new THREE.PointLight(0xfff4dc, 0, 45, 1.2); scene.add(holyLight);    // added up-front so no shader recompiles later
+const god = buildGod(scene, assets.avatar, holyLight, {
+  say: (t, s) => say(t, s),
+  onSummon: () => { SFX.choir(); S.shake = 0.03; },
+  onLeave: () => { const st = driver.st; if (st.bottleState !== 'none') st.fill = 1; if (st.cigState === 'hand') { st.cigLen = 0.14; st.ash = 0.004; } },
+  onThrow: () => SFX.whoosh(),
+  onLand: () => SFX.clonk(2),
+  makeBottle: () => driver.makeBottle(),
+  makeCigar: () => driver.makeCigar(),
+  beerSlot: (i) => driver.beerSlot(i),
+  cigarSlot: (i) => driver.cigarSlot(i),
+  beerSlotsFilled: () => driver.st.beers,
+  cigarSlotsFilled: () => driver.st.cigars,
+  addBeer: () => driver.addBeer(),
+  addCigar: () => driver.addCigar(),
+});
+let flashAmt = 0;
+const flash = (a) => { flashAmt = a; };
+const summonGod = () => god.summon(new THREE.Vector3(S.x, 0, S.z), S.th, heightAt, () => S);
 // The shirt's hem hangs ~0.3 m below the hips: on the tractor the tall seat hid it, in the Camaro it pokes
 // out under the floor pan. Clip it at the seat cushion (plane follows the car body every frame).
 const hemBase = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.42), hem = hemBase.clone();
@@ -254,6 +288,8 @@ addEventListener('keydown', (e) => {
   if (e.repeat) return;
   keys.add(e.code);
   if (overlayUp()) { startGame(); return; }
+  if (e.altKey && e.code === 'KeyF') e.preventDefault();          // don't open the browser menu
+  if (e.altKey && e.code === 'Digit4' && keys.has('KeyF')) { e.preventDefault(); summonGod(); }   // Alt+F+4: God on demand
   if (e.code === 'KeyC') camMode = (camMode + 1) % 2;
   if (e.code === 'KeyR') resetState();
   if (e.code === 'KeyH') $('hints').classList.toggle('faded');
@@ -279,8 +315,8 @@ function hud(vf) {
   const st = driver.st;
   $('beer').textContent = `${st.bottleState === 'none' ? 'no bottle' : `${Math.round(st.fill * 100)}%`} · ${st.beers} in carrier`;
   $('cigars').textContent = `${st.cigState === 'hand' ? `${Math.round((st.cigLen / 0.14) * 100)}%` : 'none lit'} · ${st.cigars} in box`;
-  $('buzz').firstElementChild.style.width = Math.min(100, (S.drunk / 1.5) * 100) + '%';
-  $('mph').textContent = Math.round(Math.abs(vf) * 2.237);
+  $('buzz').firstElementChild.style.width = Math.min(100, (S.drunk / DRUNK_MAX) * 100) + '%';
+  $('mph').textContent = S.drunk > 2.5 && Math.sin(clock * 3.1) > 0.4 ? '??' : Math.round(Math.abs(vf) * 2.237 * (1 + (S.drunk > 1.5 ? Math.sin(clock * 5) * 0.3 : 0)));
 }
 
 // ---- simulation -------------------------------------------------------------
@@ -292,7 +328,8 @@ function step(dt) {
   const throttle = (down('KeyW', 'ArrowUp') ? 1 : 0) - (down('KeyS', 'ArrowDown') ? 1 : 0);
   let steerIn = (down('KeyA', 'ArrowLeft') ? 1 : 0) - (down('KeyD', 'ArrowRight') ? 1 : 0);
   const braking = down('Space');
-  if (S.drunk > 0.05) steerIn = clamp(steerIn + S.drunk * 0.25 * Math.sin(clock * 0.6 + Math.sin(clock * 0.23) * 3), -1, 1);
+  if (S.invT > 0) steerIn = -steerIn;                                       // which way is left?
+  if (S.drunk > 0.05) steerIn = clamp(steerIn + Math.min(0.7, S.drunk * 0.22) * Math.sin(clock * 0.6 + Math.sin(clock * 0.23) * 3), -1, 1);
   const dx = Math.sin(S.th), dz = Math.cos(S.th);
   let vf = S.vx * dx + S.vz * dz;
   let latx = S.vx - dx * vf, latz = S.vz - dz * vf;
@@ -356,7 +393,7 @@ function updateCamera(dt, vf) {
     if (camera.fov !== T.fov) { camera.fov = T.fov; camera.updateProjectionMatrix(); }
     driver.eyeWorld(camera.position);
     driver.headQuatWorld(camera.quaternion).multiply(qFlip);
-    const d = S.drunk;
+    const d = Math.min(S.drunk, 2.6);
     if (d > 0.02) camera.quaternion.multiply(qSway.setFromEuler(eSway.set(Math.sin(clock * 0.7) * 0.05 * d, Math.sin(clock * 0.53) * 0.07 * d, Math.sin(clock * 0.8) * 0.1 * d)));
   } else {
     S.camTh += angDiff(S.th, S.camTh) * Math.min(1, T.camLag * dt);
@@ -385,6 +422,23 @@ function adaptResolution(dt) {
   if (next !== resScale) { resScale = next; renderer.setPixelRatio(resScale); composer.setPixelRatio(resScale); composer.setSize(innerWidth, innerHeight); }
 }
 
+// The really drunk stuff, past a buzz of ~2: blackouts, mirror-world, steering that swaps sides, throwing up.
+function drunkEpisodes(dt) {
+  const d = S.drunk;
+  S.kalT = Math.max(0, (S.kalT || 0) - dt); S.invT = Math.max(0, (S.invT || 0) - dt);
+  if (S.blackT > 0) { S.blackT -= dt; S.black = Math.sqrt(Math.sin(Math.min(1, Math.max(0, 1 - S.blackT / 1.4)) * Math.PI)); } else S.black = 0;
+  if (d < 2) return;
+  const roll = (rate) => Math.random() < rate * dt * (d - 1.8);
+  if (d > 2.5 && !(S.blackT > 0) && roll(0.05)) { S.blackT = 1.4; say('...', 1); }
+  if (d > 3 && !(S.kalT > 0) && roll(0.04)) { S.kalT = 2 + Math.random() * 2; say('Is that... two roads?', 2); }
+  if (d > 2.2 && !(S.invT > 0) && roll(0.03)) { S.invT = 2.5 + Math.random() * 2.5; say('WHICH WAY IS LEFT?!', 2); }
+  if (d > 3.2 && roll(0.025)) {                                             // chunder: sobers you up a little
+    SFX.burp(); setTimeout(() => SFX.cough(), 400); say('*BLEURGH*', 1.5); S.shake = 0.06; S.drunk -= 0.4;
+    const dir = v3b.set(-0.6, -0.2, 1).applyQuaternion(driver.headQuatWorld(qTmp)).multiplyScalar(2);
+    puffSmoke(driver.mouthWorld(v3), dir, 0.4, 24, { life: 1.6, s0: 0.03, s1: 0.25, a: 0.85, color: 0x9bb83a });
+  }
+}
+
 function frame(now) {
   requestAnimationFrame(frame);
   tick(now);
@@ -398,7 +452,11 @@ function tick(now) {
     S.wisp = 0.3;
     puffSmoke(driver.emberWorld(v3), v3b.set(0, 0.25, 0), 0.03, 1, { life: 1.8, s0: 0.015, s1: 0.12, a: 0.25 });
   }
-  S.drunk = Math.max(0, S.drunk - dt * 0.004);
+  S.drunk = Math.max(0, S.drunk - dt * 0.006);
+  drunkEpisodes(dt);
+  god.update(dt, flash);
+  $('holy').style.opacity = flashAmt.toFixed(3);
+  renderer.toneMappingExposure = 1 + flashAmt * 2.5;
   {  // when both the carrier and the cigar box run dry, the car restocks itself a few seconds later
     const st = driver.st;
     if (!driver.busy && st.beers === 0 && st.bottleState === 'none' && st.cigars === 0 && st.cigState !== 'hand' && (S.restock += dt) > 3) {
@@ -416,8 +474,9 @@ function tick(now) {
   adaptResolution(dt);
   hud(vf);
   if (S.msgT > 0 && (S.msgT -= dt) <= 0) $('msg').style.opacity = 0;
-  const dAmt = Math.min(1, Math.max(0, (S.drunk - 0.12) / 0.9));
-  if (dAmt > 0) { drunkPass.uniforms.uAmt.value = dAmt; drunkPass.uniforms.uTime.value = clock; composer.render(); }
+  const U = drunkPass.uniforms, dAmt = Math.min(1, Math.max(0, (S.drunk - 0.12) / 0.9));
+  U.uTrip.value = Math.min(1, Math.max(0, (S.drunk - 1.5) / 1.5)); U.uKal.value = S.kalT > 0 ? 1 : 0; U.uBlack.value = S.black || 0;
+  if (dAmt > 0 || U.uBlack.value > 0) { U.uAmt.value = dAmt; U.uTime.value = clock; composer.render(); }
   else renderer.render(scene, camera);
 }
 addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); });
@@ -434,6 +493,6 @@ function warmUp() {
 warmUp();
 requestAnimationFrame(frame);
 // debug handle for headless checks; step(n, dt) advances the game when rAF is paused (hidden tab)
-window.__car = { S, T, keys, car, driver, world, camera, renderer, setCam: (m) => { camMode = m; },
+window.__car = { S, T, keys, car, driver, world, god, summonGod, camera, renderer, setCam: (m) => { camMode = m; },
   step: (n = 1, dt = 1 / 60) => { for (let i = 0; i < n; i++) tick(last + dt * 1000); },
   cam: (p, t) => { debugCam = p ? { p: new THREE.Vector3(...p), t: new THREE.Vector3(...t) } : null; } };

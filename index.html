@@ -13,6 +13,7 @@
     .bar { height: 8px; background: rgba(255,255,255,.18); border-radius: 4px; overflow: hidden; margin: 6px 0 10px; }
     .bar > i { display: block; height: 100%; width: 0; background: #e8a030; }
     #buzz > i { background: #e0a030; }
+    #holy { position: fixed; inset: 0; pointer-events: none; opacity: 0; z-index: 4; background: radial-gradient(circle at 50% 42%, #fff 0%, #fffdf0 35%, rgba(255,248,220,.85) 70%, rgba(255,240,200,.6) 100%); }
     #lookHint { position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%); background: rgba(24, 12, 10, 0.85); padding: 6px 14px; border-radius: 8px; font-size: 13px; display: none; pointer-events: none; }
     .row { display: flex; justify-content: space-between; font-size: 13px; opacity: 1; margin-top: 2px; }
     #msg { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); font-weight: 700; font-size: 18px; text-shadow: 0 2px 6px #000a; opacity: 0; transition: opacity .2s; pointer-events: none; }
@@ -36,6 +37,7 @@
   </div>
   <div id="lookHint">Click to look around with the mouse</div>
   <div id="msg"></div>
+  <div id="holy"></div>
   <div id="speed" class="panel"><span id="mph">0</span><small>mph</small></div>
   <div id="hints" class="panel">
     <kbd>W</kbd><kbd>S</kbd> gas / reverse &nbsp; <kbd>A</kbd><kbd>D</kbd> steer &nbsp; <kbd>Space</kbd> brake &nbsp; Mouse look<br>

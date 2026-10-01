@@ -10,6 +10,7 @@ Drive a '67 Camaro down an endless road. Chug beer, smoke cigars, don't crash. Y
 | A / D | steer |
 | Space | brake |
 | ` (spam it) | chug beer |
+| Alt + F + 4 | ??? |
 | Q | smoke cigar |
 | C | camera |
 | R | reset |
