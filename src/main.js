@@ -273,10 +273,29 @@ car.cabin.traverse((o) => { if (o.name === 'Wolf3D_Outfit_Top') o.material.clipp
 // ---- state ------------------------------------------------------------------
 const S = {};
 function resetState() {
-  Object.assign(S, { cruise: 20, crashT: 0, x: 1.7, z: 0, th: 0, vx: 0, vz: 0, steer: 0, yawRate: 0, pitch: 0, roll: 0, camTh: 0, shake: 0, msgT: 0, drunk: 0, yaw: 0, look: -0.34, restock: 0 });
+  Object.assign(S, { dist: 0, beatBest: false, cruise: 20, crashT: 0, x: 1.7, z: 0, th: 0, vx: 0, vz: 0, steer: 0, yawRate: 0, pitch: 0, roll: 0, camTh: 0, shake: 0, msgT: 0, drunk: 0, yaw: 0, look: -0.34, restock: 0 });
   $('msg').style.opacity = 0;
 }
 resetState();
+
+// ---- the goal: miles down the road without crashing; best run per mode, kept in the browser ----
+const BEST_KEY = 'beercar.best.v1';
+let best = { you: 0, fly: 0 };
+try { Object.assign(best, JSON.parse(localStorage.getItem(BEST_KEY)) || {}); } catch { /* private mode */ }
+const saveBest = () => { try { localStorage.setItem(BEST_KEY, JSON.stringify(best)); } catch { /* storage blocked */ } };
+const miles = (m) => (m / 1609.34).toFixed(2);
+function endRun() {
+  if (S.dist > 50) say(S.beatBest ? `NEW BEST: ${miles(S.dist)} mi!` : `Run over: ${miles(S.dist)} mi (best ${miles(best[mode])})`, 3);
+  saveBest(); S.dist = 0; S.beatBest = false;
+}
+function goal() {
+  if (S.dist > best[mode]) {
+    if (!S.beatBest && best[mode] > 50) say('NEW BEST!', 2);
+    best[mode] = S.dist; S.beatBest = true;
+  }
+  $('goalRun').textContent = miles(S.dist); $('goalBest').textContent = miles(best[mode]);
+}
+addEventListener('pagehide', saveBest);
 
 // ---- input ------------------------------------------------------------------
 const keys = new Set();
@@ -289,7 +308,7 @@ function startGame(m) {
   $('overlay').style.display = 'none';
   setTimeout(() => $('hints').classList.add('faded'), 12000);
   if (!actx) startAudio();
-  if (m !== mode) { mode = m; resetState(); respawn(); camMode = m === 'fly' ? 1 : 0; }
+  if (m !== mode) { saveBest(); mode = m; resetState(); respawn(); camMode = m === 'fly' ? 1 : 0; }
   assets.avatar.scene.visible = mode === 'you';
   $('hud').style.display = mode === 'you' ? '' : 'none';
   $('hints').innerHTML = HINTS[mode];
@@ -297,7 +316,7 @@ function startGame(m) {
   lockMouse();
 }
 function showMenu() {
-  $('overlay').style.display = 'grid';
+  $('overlay').style.display = 'grid'; saveBest();
   fly.setActive(false);
   if (document.pointerLockElement) document.exitPointerLock();
 }
@@ -314,7 +333,7 @@ addEventListener('keydown', (e) => {
   if (e.altKey && e.code === 'Digit4' && keys.has('KeyF')) { e.preventDefault(); summonGod(); }   // Alt+F+4: God on demand
   if (e.code === 'KeyC') camMode = (camMode + 1) % 2;
   if (e.code === 'KeyG') setTimeScale(timeScale >= 8 ? 1 : timeScale * 2);
-  if (e.code === 'KeyR') resetState();
+  if (e.code === 'KeyR') { endRun(); resetState(); }
   if (e.code === 'KeyH') $('hints').classList.toggle('faded');
   if (e.code === 'KeyM') { muted = !muted; if (master) master.gain.value = muted ? 0 : 1; }
   if (mode === 'fly') {
@@ -368,6 +387,7 @@ function crash(what) {
   car.root.visible = false;
   say(`BOOM! Hit a ${what}`, 2);
   if (mode === 'fly') fly.crashed();
+  setTimeout(endRun, 0);
 }
 function respawn() {                                                        // keeps the buzz and the distance
   Object.assign(S, { crashT: 0, x: 1.7, th: 0, vx: 0, vz: 0, steer: 0, yawRate: 0, camTh: 0 });
@@ -385,7 +405,7 @@ function step(dt) {
     throttle = clamp((S.cruise - (S.vx * Math.sin(S.th) + S.vz * Math.cos(S.th))) * 0.5, -1, 1);
     const out = fly.update(dt, S, steerIn ? steerIn : null);
     steerIn = out.steer || 0; sober = !!out.instructor;
-    if (Math.abs(S.x) > 25) { respawn(); say('The fly got lost in a field. Back to the road', 2); return 0; }
+    if (Math.abs(S.x) > 25) { respawn(); endRun(); say('The fly got lost in a field. Run over', 2); return 0; }
     if (out.drank) S.drunk = Math.min(DRUNK_MAX, S.drunk + out.drank * 4);
   }
   if (S.invT > 0 && !sober) steerIn = -steerIn;                                       // which way is left?
@@ -421,6 +441,7 @@ function step(dt) {
   const nx = Math.sin(S.th), nz = Math.cos(S.th);
   S.vx = nx * vf + latx; S.vz = nz * vf + latz;
   S.x += S.vx * dt; S.z += S.vz * dt;
+  S.dist += Math.max(0, S.vz * dt);                                         // progress down the road
   for (const d of [1.3, -1.2]) {                                            // nose and tail circles vs trees / posts / poles
     const hit = world.obstacleAt(S.x + nx * d, S.z + nz * d, 0.8);
     if (hit) { crash(hit); return 0; }
@@ -551,7 +572,7 @@ function render(dt, vf) {
   world.update(S.x, S.z, camera);
   camera.updateMatrixWorld();
   adaptResolution(dt);
-  hud(vf);
+  hud(vf); goal();
   if (S.msgT > 0 && (S.msgT -= dt) <= 0) $('msg').style.opacity = 0;
   const U = drunkPass.uniforms, dAmt = Math.min(1, Math.max(0, (S.drunk - 0.12) / 0.9));
   U.uTrip.value = Math.min(1, Math.max(0, (S.drunk - 1.5) / 1.5)); U.uKal.value = S.kalT > 0 ? 1 : 0; U.uBlack.value = S.black || 0;

@@ -7,6 +7,8 @@ Or let a fruit fly drive.
 
 Pick a mode on the menu (`1` / `2`), `Esc` goes back to it.
 
+**Goal:** get as many miles down the road as you can without crashing. Each mode keeps its own best run.
+
 ## 1 · You drive
 
 | Key | |
