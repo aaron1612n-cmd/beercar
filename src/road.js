@@ -14,6 +14,7 @@ const PERIOD = 12;                     // road texture period (m) = dash period
 const ROAD_LEN = PERIOD * 70;          // 840 m strip
 const CH = 64, RANGE = 5;              // chunk size (m); chunks kept within +-RANGE of the car's chunk
 const GROUND_TILE = 6;                 // grass texture tile (m)
+const POST_GAP = 32;                   // white roadside posts, metres apart (wide enough to drive between)
 
 // ---- procedural road textures: albedo + normal + roughness, tiling along the road ---------------
 // 100 px/m: 1000 px across 10 m, 1200 px along 12 m. Value noise wraps vertically so it tiles.
@@ -102,7 +103,7 @@ function generateChunk(i, j) {
     trees.push({ x, z, rot: rnd() * 6.283, s: 0.8 + rnd() * 0.9, v: (rnd() * VARIANTS) | 0 });
   }
   if (x0 <= 0 && x0 + CH > 0) {                                          // the chunk the road runs through
-    for (let z = Math.ceil(z0 / 8) * 8; z < z0 + CH; z += 8) posts.push(z);
+    for (let z = Math.ceil(z0 / POST_GAP) * POST_GAP; z < z0 + CH; z += POST_GAP) posts.push(z);
     for (let z = Math.ceil(z0 / 48) * 48; z < z0 + CH; z += 48) poles.push(z);
   }
   return { trees, posts, poles };
@@ -169,7 +170,7 @@ export function buildWorld(scene, renderer, assets) {
   // ---- roadside furniture (instanced; filled from the chunks) ----
   const wood = new THREE.MeshStandardMaterial({ roughness: 0.9, color: 0x8a7458 });
   for (const k of ['map', 'normalMap', 'roughnessMap']) { wood[k] = assets.bark[k].clone(); wood[k].repeat.set(1, 6); wood[k].needsUpdate = true; }
-  const POSTS = 2 * (2 * RANGE + 1) * (CH / 8), POLES = (2 * RANGE + 1) * 2;
+  const POSTS = 2 * (2 * RANGE + 1) * Math.ceil(CH / POST_GAP), POLES = (2 * RANGE + 1) * 2;
   const post = new THREE.InstancedMesh(new THREE.BoxGeometry(0.12, 0.95, 0.12).translate(0, 0.47, 0), new THREE.MeshStandardMaterial({ color: 0xe6e4dc, roughness: 0.55 }), POSTS);
   const refl = new THREE.InstancedMesh(new THREE.BoxGeometry(0.08, 0.14, 0.015), new THREE.MeshStandardMaterial({ color: 0xff2a10, emissive: 0x801000, roughness: 0.2, metalness: 0.3 }), POSTS);
   const pole = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.11, 0.15, 8.5, 10).translate(0, 4.25, 0), wood, POLES);
@@ -215,6 +216,17 @@ export function buildWorld(scene, renderer, assets) {
     refresh(x, z);
     if (camera) trees.update(camera, SUN_DIR);
   }
+  // what the car would hit at (x, z) with radius r: tree trunks, posts, telegraph poles (or null)
+  function obstacleAt(x, z, r) {
+    const i0 = Math.round(x / CH), j0 = Math.round(z / CH);
+    for (let i = i0 - 1; i <= i0 + 1; i++) for (let j = j0 - 1; j <= j0 + 1; j++) {
+      const c = chunks.get(i + ',' + j); if (!c) continue;
+      for (const t of c.trees) if (Math.hypot(t.x - x, t.z - z) < r + 0.36 * t.s) return 'tree';
+      for (const pz of c.posts) if (Math.abs(pz - z) < r + 0.06 && Math.abs(Math.abs(x) - 5.5) < r + 0.06) return 'post';
+      for (const pz of c.poles) if (Math.hypot(-7 - x, pz - z) < r + 0.15) return 'pole';
+    }
+    return null;
+  }
   update(0, 0);
-  return { update, chunks };
+  return { update, chunks, obstacleAt };
 }

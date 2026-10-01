@@ -4,6 +4,7 @@ import { buildCar } from './car.js';
 import { buildDriver } from './driver.js';
 import { loadAssets } from './assets.js';
 import { buildGod } from './god.js';
+import { buildFly } from './fly.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
@@ -153,6 +154,7 @@ const SFX = {
   burp() { SFX.voice(78, 62, 0.55, [[500, 3], [900, 4]], 0.22); burst('lowpass', 300, 0.1, 0.45, 2); },
   cough() { for (let i = 0; i < 3; i++) setTimeout(() => { burst('bandpass', 480 + Math.random() * 150, 0.32, 0.16, 1.2); SFX.voice(200, 140, 0.12, [[600, 3]], 0.08); }, i * 230 + Math.random() * 40); },
   ash: () => burst('highpass', 3000, 0.02, 0.1),
+  boom: () => { burst('lowpass', 160, 0.9, 1.8, 0.7); tone(80, 28, 0.6, 1.4); burst('bandpass', 900, 0.35, 0.7, 0.6); setTimeout(() => burst('lowpass', 400, 0.25, 2.5, 0.5), 150); },
 };
 
 // ---- smoke + clippings ------------------------------------------------------
@@ -256,6 +258,9 @@ const god = buildGod(scene, assets.avatar, holyLight, {
   addBeer: () => driver.addBeer(),
   addCigar: () => driver.addCigar(),
 });
+// ---- FLY MODE: the giant fruit fly in the driver's seat (fly.js) ----
+const fly = buildFly({ scene, renderer, car, say });
+let mode = 'you';
 let flashAmt = 0;
 const flash = (a) => { flashAmt = a; };
 const summonGod = () => god.summon(new THREE.Vector3(S.x, 0, S.z), S.th, heightAt, () => S);
@@ -268,7 +273,7 @@ car.cabin.traverse((o) => { if (o.name === 'Wolf3D_Outfit_Top') o.material.clipp
 // ---- state ------------------------------------------------------------------
 const S = {};
 function resetState() {
-  Object.assign(S, { x: 1.7, z: 0, th: 0, vx: 0, vz: 0, steer: 0, yawRate: 0, pitch: 0, roll: 0, camTh: 0, shake: 0, msgT: 0, drunk: 0, yaw: 0, look: -0.34, restock: 0 });
+  Object.assign(S, { cruise: 20, crashT: 0, x: 1.7, z: 0, th: 0, vx: 0, vz: 0, steer: 0, yawRate: 0, pitch: 0, roll: 0, camTh: 0, shake: 0, msgT: 0, drunk: 0, yaw: 0, look: -0.34, restock: 0 });
   $('msg').style.opacity = 0;
 }
 resetState();
@@ -278,29 +283,55 @@ const keys = new Set();
 let camMode = 0;   // 0 first person, 1 chase
 const overlayUp = () => $('overlay').style.display !== 'none';
 function lockMouse() { try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch { /* unsupported */ } }
-function startGame() {
+const HINTS = { you: $('hints').innerHTML,
+  fly: '<kbd>W</kbd><kbd>S</kbd> cruise speed &nbsp; hold <kbd>A</kbd><kbd>D</kbd> teach the fly &nbsp; <kbd>Space</kbd> brake &nbsp; Mouse look<br><kbd>T</kbd> lesson / solo &nbsp; <kbd>`</kbd> pour it a beer &nbsp; <kbd>X</kbd> wipe its training<br><kbd>C</kbd> camera &nbsp; <kbd>G</kbd> speed &nbsp; <kbd>R</kbd> reset &nbsp; <kbd>M</kbd> mute &nbsp; <kbd>H</kbd> help &nbsp; <kbd>Esc</kbd> menu' };
+function startGame(m) {
   $('overlay').style.display = 'none';
   setTimeout(() => $('hints').classList.add('faded'), 12000);
   if (!actx) startAudio();
+  if (m !== mode) { mode = m; resetState(); respawn(); camMode = m === 'fly' ? 1 : 0; }
+  assets.avatar.scene.visible = mode === 'you';
+  $('hud').style.display = mode === 'you' ? '' : 'none';
+  $('hints').innerHTML = HINTS[mode];
+  fly.setActive(mode === 'fly');
   lockMouse();
+}
+function showMenu() {
+  $('overlay').style.display = 'grid';
+  fly.setActive(false);
+  if (document.pointerLockElement) document.exitPointerLock();
 }
 addEventListener('keydown', (e) => {
   if (e.repeat) return;
   keys.add(e.code);
-  if (overlayUp()) { startGame(); return; }
+  if (overlayUp()) {
+    if (e.code === 'Digit1' || e.code === 'Numpad1' || e.code === 'Enter') startGame('you');
+    if (e.code === 'Digit2' || e.code === 'Numpad2') startGame('fly');
+    return;
+  }
+  if (e.code === 'Escape') { showMenu(); return; }
   if (e.altKey && e.code === 'KeyF') e.preventDefault();          // don't open the browser menu
   if (e.altKey && e.code === 'Digit4' && keys.has('KeyF')) { e.preventDefault(); summonGod(); }   // Alt+F+4: God on demand
   if (e.code === 'KeyC') camMode = (camMode + 1) % 2;
+  if (e.code === 'KeyG') setTimeScale(timeScale >= 8 ? 1 : timeScale * 2);
   if (e.code === 'KeyR') resetState();
   if (e.code === 'KeyH') $('hints').classList.toggle('faded');
   if (e.code === 'KeyM') { muted = !muted; if (master) master.gain.value = muted ? 0 : 1; }
-  if (e.code === 'Backquote') driver.start('beer');
-  if (e.code === 'KeyQ') driver.start('cigar');
+  if (mode === 'fly') {
+    if (e.code === 'Backquote') fly.pour();
+    if (e.code === 'KeyT') fly.toggleMode();
+    if (e.code === 'KeyX') fly.forget();
+  } else {
+    if (e.code === 'Backquote') driver.start('beer');
+    if (e.code === 'KeyQ') driver.start('cigar');
+  }
   if (e.code === 'Space' || e.code === 'Backquote') e.preventDefault();
 });
 addEventListener('keyup', (e) => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
-$('overlay').addEventListener('click', startGame);
+$('speedBtn').addEventListener('click', () => setTimeScale(timeScale >= 8 ? 1 : timeScale * 2));
+$('playYou').addEventListener('click', () => startGame('you'));
+$('playFly').addEventListener('click', () => startGame('fly'));
 canvas.addEventListener('click', () => { if (document.pointerLockElement !== canvas) lockMouse(); });
 addEventListener('mousemove', (e) => {
   if (document.pointerLockElement !== canvas) return;
@@ -324,12 +355,41 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const angDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 let last = performance.now(), clock = 0;
 
+// crashing: anything solid -> fireball, the car's gone for a moment, then it respawns in the lane
+function crash(what) {
+  S.crashT = 1.8; S.shake = 0.35;
+  SFX.boom();
+  for (let k = 0; k < 14; k++) {                                            // fireball: hot core, flames thrown out
+    const p = v3.set(S.x + (Math.random() - 0.5) * 2.5, 0.4 + Math.random() * 1.6, S.z + (Math.random() - 0.5) * 3.5);
+    puffSmoke(p, v3b.set(0, 1.5, 0), 4, 2, { life: 0.35 + Math.random() * 0.3, s0: 0.4, s1: 2.2, a: 1, color: 0xffe070 });
+    puffSmoke(p, v3b.set(0, 3, 0), 11, 3, { life: 0.7 + Math.random() * 0.6, s0: 0.3, s1: 2.6, a: 0.95, color: k % 2 ? 0xff5a10 : 0xff9a20 });
+  }
+  puffSmoke(v3.set(S.x, 1.2, S.z), v3b.set(0, 3.5, 0), 3.5, 40, { life: 4, s0: 0.8, s1: 5, a: 0.7, color: 0x2a2522 });   // black smoke
+  car.root.visible = false;
+  say(`BOOM! Hit a ${what}`, 2);
+  if (mode === 'fly') fly.crashed();
+}
+function respawn() {                                                        // keeps the buzz and the distance
+  Object.assign(S, { crashT: 0, x: 1.7, th: 0, vx: 0, vz: 0, steer: 0, yawRate: 0, camTh: 0 });
+  car.root.visible = true;
+}
+
 function step(dt) {
-  const throttle = (down('KeyW', 'ArrowUp') ? 1 : 0) - (down('KeyS', 'ArrowDown') ? 1 : 0);
+  if (S.crashT > 0) { if ((S.crashT -= dt) <= 0) respawn(); return 0; }
+  let throttle = (down('KeyW', 'ArrowUp') ? 1 : 0) - (down('KeyS', 'ArrowDown') ? 1 : 0);
   let steerIn = (down('KeyA', 'ArrowLeft') ? 1 : 0) - (down('KeyD', 'ArrowRight') ? 1 : 0);
   const braking = down('Space');
-  if (S.invT > 0) steerIn = -steerIn;                                       // which way is left?
-  if (S.drunk > 0.05) steerIn = clamp(steerIn + Math.min(0.7, S.drunk * 0.22) * Math.sin(clock * 0.6 + Math.sin(clock * 0.23) * 3), -1, 1);
+  let sober = false;                                                        // the instructor drives sober
+  if (mode === 'fly') {                                                     // the fly steers; W/S set the cruise speed
+    S.cruise = clamp(S.cruise + throttle * 8 * dt, 0, T.maxFwd);
+    throttle = clamp((S.cruise - (S.vx * Math.sin(S.th) + S.vz * Math.cos(S.th))) * 0.5, -1, 1);
+    const out = fly.update(dt, S, steerIn ? steerIn : null);
+    steerIn = out.steer || 0; sober = !!out.instructor;
+    if (Math.abs(S.x) > 25) { respawn(); say('The fly got lost in a field. Back to the road', 2); return 0; }
+    if (out.drank) S.drunk = Math.min(DRUNK_MAX, S.drunk + out.drank * 4);
+  }
+  if (S.invT > 0 && !sober) steerIn = -steerIn;                                       // which way is left?
+  if (S.drunk > 0.05 && !sober) steerIn = clamp(steerIn + Math.min(0.7, S.drunk * 0.22) * Math.sin(clock * 0.6 + Math.sin(clock * 0.23) * 3), -1, 1);
   const dx = Math.sin(S.th), dz = Math.cos(S.th);
   let vf = S.vx * dx + S.vz * dz;
   let latx = S.vx - dx * vf, latz = S.vz - dz * vf;
@@ -361,6 +421,10 @@ function step(dt) {
   const nx = Math.sin(S.th), nz = Math.cos(S.th);
   S.vx = nx * vf + latx; S.vz = nz * vf + latz;
   S.x += S.vx * dt; S.z += S.vz * dt;
+  for (const d of [1.3, -1.2]) {                                            // nose and tail circles vs trees / posts / poles
+    const hit = world.obstacleAt(S.x + nx * d, S.z + nz * d, 0.8);
+    if (hit) { crash(hit); return 0; }
+  }
 
   // pose + jolt for the cigar ash (hard throttle/brake, cornering, road rumble)
   const accelNow = (vf - vf0) / Math.max(dt, 1e-3);
@@ -391,8 +455,10 @@ const qSway = new THREE.Quaternion(), eSway = new THREE.Euler();
 function updateCamera(dt, vf) {
   if (camMode === 0) {
     if (camera.fov !== T.fov) { camera.fov = T.fov; camera.updateProjectionMatrix(); }
-    driver.eyeWorld(camera.position);
-    driver.headQuatWorld(camera.quaternion).multiply(qFlip);
+    if (mode === 'fly') {                                                // mouse look turns the camera, not the fly's eyes
+      fly.viewFrom(camera.position, camera.quaternion);
+      camera.quaternion.multiply(qFlip).multiply(qSway.setFromEuler(eSway.set(S.look + 0.3, S.yaw, 0, 'YXZ')));
+    } else { driver.eyeWorld(camera.position); driver.headQuatWorld(camera.quaternion).multiply(qFlip); }
     const d = Math.min(S.drunk, 2.6);
     if (d > 0.02) camera.quaternion.multiply(qSway.setFromEuler(eSway.set(Math.sin(clock * 0.7) * 0.05 * d, Math.sin(clock * 0.53) * 0.07 * d, Math.sin(clock * 0.8) * 0.1 * d)));
   } else {
@@ -443,10 +509,20 @@ function frame(now) {
   requestAnimationFrame(frame);
   tick(now);
 }
+let timeScale = 1;                                                          // G: 1x / 2x / 4x / 8x game speed
+function setTimeScale(k) {
+  timeScale = k; $('speedBtn').textContent = `▶ ${k}x`;
+  say(k > 1 ? `Speed ${k}x${mode === 'fly' ? ' (its brain can only think so fast, so it reacts slower)' : ''}` : 'Normal speed', 2);
+}
 function tick(now) {
-  const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = Math.max(last, now); clock += dt;
-  const vf = step(dt);
-  driver.update(dt, { steerAngle: S.steer * 3.2, yaw: S.yaw, pitch: S.look, firstPerson: camMode === 0,
+  const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = Math.max(last, now);
+  let vf = 0;
+  for (let k = 0; k < timeScale; k++) { clock += dt; vf = sim(dt); }
+  render(dt, vf);
+}
+function sim(dt) {
+  const vf = overlayUp() ? 0 : step(dt);
+  if (mode === 'you') driver.update(dt, { steerAngle: S.steer * 3.2, yaw: S.yaw, pitch: S.look, firstPerson: camMode === 0,
     deck: { on: false }, jolt: S.jolt || 0 });
   if (driver.cigarLit && (S.wisp = (S.wisp ?? 0) - dt) <= 0) {
     S.wisp = 0.3;
@@ -468,6 +544,9 @@ function tick(now) {
   if (S.drunk > 0.3 && (S.hicT = (S.hicT ?? 5) - dt) <= 0) { S.hicT = 3 + Math.random() * 7 / S.drunk; SFX.hic(); S.shake = Math.max(S.shake, 0.02 * S.drunk); say('*hic*', 0.7); }
   $('hud').style.transform = S.drunk > 0.2 ? `rotate(${(Math.sin(clock * 0.9) * S.drunk * 3).toFixed(2)}deg)` : '';
   updateSmoke(dt); updateShards(dt);
+  return vf;
+}
+function render(dt, vf) {
   updateCamera(dt, vf);
   world.update(S.x, S.z, camera);
   camera.updateMatrixWorld();
@@ -493,6 +572,6 @@ function warmUp() {
 warmUp();
 requestAnimationFrame(frame);
 // debug handle for headless checks; step(n, dt) advances the game when rAF is paused (hidden tab)
-window.__car = { S, T, keys, car, driver, world, god, summonGod, camera, renderer, setCam: (m) => { camMode = m; },
+window.__car = { S, T, keys, car, driver, world, god, summonGod, camera, renderer, fly, startGame, showMenu, setTimeScale, setCam: (m) => { camMode = m; },
   step: (n = 1, dt = 1 / 60) => { for (let i = 0; i < n; i++) tick(last + dt * 1000); },
   cam: (p, t) => { debugCam = p ? { p: new THREE.Vector3(...p), t: new THREE.Vector3(...t) } : null; } };

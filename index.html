@@ -18,6 +18,8 @@
     .row { display: flex; justify-content: space-between; font-size: 13px; opacity: 1; margin-top: 2px; }
     #msg { position: fixed; top: 16px; left: 50%; transform: translateX(-50%); font-weight: 700; font-size: 18px; text-shadow: 0 2px 6px #000a; opacity: 0; transition: opacity .2s; pointer-events: none; }
     #speed { right: 14px; bottom: 14px; font-size: 26px; font-weight: 700; text-align: center; }
+    #speedBtn { right: 14px; bottom: 96px; border: 0; color: #fff; font: 700 14px system-ui, sans-serif; cursor: pointer; padding: 8px 12px; }
+    #speedBtn:hover { background: rgba(60, 30, 14, .9); }
     #speed small { display: block; font-size: 11px; opacity: .9; font-weight: 400; }
     #hints { left: 14px; bottom: 14px; font-size: 12px; line-height: 1.6; transition: opacity .6s; }
     #hints.faded { opacity: 0; pointer-events: none; }
@@ -26,6 +28,23 @@
     #overlay h1 { margin: 0 0 6px; font-size: 46px; letter-spacing: 1px; }
     #overlay p { margin: 4px 0; }
     #overlay .go { margin-top: 18px; font-size: 18px; font-weight: 700; color: #e8a030; }
+    #overlay { cursor: default; }
+    .modes { display: flex; gap: 16px; justify-content: center; margin: 22px 0 8px; flex-wrap: wrap; }
+    .modes button { width: 260px; padding: 16px; border-radius: 14px; border: 2px solid #e8a03080; background: rgba(24, 12, 10, .85); color: #fff; font: inherit; text-align: left; cursor: pointer; }
+    .modes button:hover, .modes button:focus-visible { border-color: #e8a030; background: rgba(60, 30, 14, .9); outline: none; }
+    .modes b { display: block; font-size: 20px; margin-bottom: 4px; color: #e8a030; }
+    .modes span { font-size: 13px; opacity: .9; }
+    #flyHud { top: 14px; right: 14px; width: 288px; display: none; font-size: 12px; }
+    #flyHud h3 { margin: 0 0 2px; font-size: 14px; letter-spacing: .5px; color: #e8a030; }
+    #flyHud .sub { opacity: .75; font-size: 11px; margin-bottom: 6px; }
+    #flyHud canvas { display: block; width: 100%; image-rendering: pixelated; border-radius: 6px; margin: 4px 0; background: #140f1c; }
+    #brainMap { height: 138px; }
+    #eyeView { height: 72px; }
+    #flyHud .row { font-size: 12px; }
+    .steer { position: relative; height: 10px; background: rgba(255,255,255,.18); border-radius: 5px; margin: 6px 0 10px; }
+    .steer::after { content: ''; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: #fff8; }
+    #flySteer { position: absolute; top: -1px; width: 12px; height: 12px; margin-left: -6px; border-radius: 6px; background: #e8a030; }
+    #flyHud .keys { margin-top: 6px; line-height: 1.7; opacity: .9; }
   </style>
 </head>
 <body>
@@ -35,22 +54,46 @@
     <div class="row"><span>Buzz</span><span></span></div>
     <div class="bar" id="buzz"><i></i></div>
   </div>
+  <div id="flyHud" class="panel">
+    <h3>FLY BRAIN</h3>
+    <div class="sub">138,639 neurons &middot; 2.7M connections &middot; real FlyWire wiring</div>
+    <canvas id="brainMap" title="Every neuron at its real place in the brain (front view), lit when it fires"></canvas>
+    <canvas id="eyeView" title="What its left and right eye see"></canvas>
+    <div class="row"><span>Steering (fly's hands)</span><span>L &nbsp;&nbsp; R</span></div>
+    <div class="steer"><i id="flySteer"></i></div>
+    <div class="row"><span>Mode</span><span id="flyMode">-</span></div>
+    <div class="row"><span>Teacher</span><span id="flyTeacher">-</span></div>
+    <div class="row"><span>Lessons</span><span id="flyLessons">-</span></div>
+    <div class="row"><span>Crashes</span><span id="flySaves">0</span></div>
+    <div class="row"><span>Solo lane error</span><span id="flyErr">-</span></div>
+    <div class="row"><span>Brain speed</span><span id="flySpeed">-</span></div>
+    <div class="row"><span>Craving</span><span id="flyCrave">-</span></div>
+    <div class="row"><span>Proboscis (MN9)</span><span></span></div>
+    <div class="bar" id="flyMn9"><i></i></div>
+    <div class="keys"><kbd>T</kbd> lesson / solo &nbsp; hold <kbd>A</kbd><kbd>D</kbd> teach it yourself<br><kbd>`</kbd> pour it a beer &nbsp; <kbd>X</kbd> wipe its training</div>
+  </div>
   <div id="lookHint">Click to look around with the mouse</div>
   <div id="msg"></div>
   <div id="holy"></div>
+  <button id="speedBtn" class="panel" title="Game speed (G)">&#9654; 1x</button>
   <div id="speed" class="panel"><span id="mph">0</span><small>mph</small></div>
   <div id="hints" class="panel">
     <kbd>W</kbd><kbd>S</kbd> gas / reverse &nbsp; <kbd>A</kbd><kbd>D</kbd> steer &nbsp; <kbd>Space</kbd> brake &nbsp; Mouse look<br>
     <kbd>`</kbd> drink beer &nbsp; <kbd>Q</kbd> smoke cigar<br>
-    <kbd>C</kbd> camera &nbsp; <kbd>R</kbd> reset &nbsp; <kbd>M</kbd> mute &nbsp; <kbd>H</kbd> help
+    <kbd>C</kbd> camera &nbsp; <kbd>R</kbd> reset &nbsp; <kbd>M</kbd> mute &nbsp; <kbd>H</kbd> help &nbsp; <kbd>Esc</kbd> menu
   </div>
   <div id="overlay">
     <div>
       <h1>Beercar</h1>
       <p>Drive. Drink. Smoke. The road never ends and you can't get out.</p>
-      <p>Beer's in the carrier on the left shelf, cigars are in the box on the right.</p>
-      <p style="font-size:11px;opacity:.7">Car: "1967 Chevrolet Camaro SS 350 Coupe" by Ddiaz Design, CC-BY-NC-SA 4.0</p>
-      <div class="go">Click or press any key to start</div>
+      <div class="modes">
+        <button id="playYou"><b>1 &middot; You drive</b><span>Beer's in the carrier on the left shelf, cigars are in the box on the right.</span></button>
+        <button id="playFly"><b>2 &middot; The fly drives</b><span>A real fruit fly brain, all 138,639 neurons, sees the road and learns to steer. Teach it, pour it a beer.</span></button>
+      </div>
+      <p style="font-size:12px;opacity:.8">Press <kbd>1</kbd> or <kbd>2</kbd> &middot; <kbd>Esc</kbd> brings you back here</p>
+      <p style="font-size:11px;opacity:.7">Car: "1967 Chevrolet Camaro SS 350 Coupe" by Ddiaz Design, CC-BY-NC-SA 4.0<br>
+      Fly brain: FlyWire connectome v783 (Dorkenwald et al. 2024, Schlegel et al. 2024), spiking model after Shiu et al. 2024</p>
+      <div class="go"></div>
     </div>
   </div>
   <script type="module" src="/src/main.js"></script>
