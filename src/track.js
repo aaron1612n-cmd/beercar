@@ -20,7 +20,7 @@ export function makeTrack(seed = 1) {
   const grid = new Map(), itemGrid = new Map(), items = [], bends = [];
   const put = (map, x, z, v) => { const k = ckey(Math.floor(x / CELL), Math.floor(z / CELL)); let a = map.get(k); if (!a) map.set(k, a = []); a.push(v); };
   const sOf = (i) => (i - i0) * STEP;
-  let nextHiker = 120, seen = -Infinity, stuck = 0;
+  let nextHiker = 60, seen = -Infinity, stuck = 0;
   const pieces = [];                                                     // what each grow() added, so it can be undone
 
   function addItem(kind, i, lat, side = Math.sign(lat)) {
@@ -35,7 +35,7 @@ export function makeTrack(seed = 1) {
     if (s % POST_GAP === 0) for (const side of [-1, 1]) if (!(sharp && side === out)) addItem('post', i, side * 5.5);
     if (s % POLE_GAP === 0) addItem('pole', i, -7);
     if (sharp && s % SIGN_GAP === 0) addItem('sign', i, out * 6.3);
-    if (!bend && s >= nextHiker && s % POST_GAP === POST_GAP / 2) { addItem('hiker', i, (rnd() - 0.5) * 3 || 0.1); nextHiker = s + 250 + rnd() * 200; }
+    if (!bend && s >= nextHiker && s % POST_GAP === POST_GAP / 2) { addItem('hiker', i, (rnd() - 0.5) * 3 || 0.1); nextHiker = s + 125 + rnd() * 100; }
   }
   for (let i = 0; i <= i0; i++) push(0, sOf(i), 0, null);
 

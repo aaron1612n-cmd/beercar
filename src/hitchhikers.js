@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js';
 
-const POOL = 5, JEANS = [0x2d4568, 0x3b3b3b, 0x5a4a32];
+const POOL = 8, JEANS = [0x2d4568, 0x3b3b3b, 0x5a4a32];
 // striped tees: [stripe, base] colours
 const TEES = [[0xc8261c, 0xf2ede0], [0x1f4fa8, 0xf2d43a], [0x2d8a3a, 0xf2ede0], [0xe0782a, 0x23233a], [0x7a2d9a, 0x9fd8e8]];
 const CAP = ['#d8261c', '#f2c414', '#1f5fc8', '#2d9a3a'];
