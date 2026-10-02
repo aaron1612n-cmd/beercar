@@ -344,7 +344,7 @@ addEventListener('keydown', (e) => {
   if (e.altKey && e.code === 'Digit4' && keys.has('KeyF')) { e.preventDefault(); summonGod(); }   // Alt+F+4: God on demand
   if (e.code === 'KeyC') camMode = (camMode + 1) % 2;
   if (e.code === 'KeyG') { S.auto = !S.auto; say(S.auto ? 'Autopilot ON: it drives, you drink (W A S D takes over)' : 'Autopilot off', 2); }
-  if (e.code === 'KeyT') setTimeScale(timeScale >= 8 ? 1 : timeScale * 2);
+  if (e.code === 'KeyF' && !e.altKey) setTimeScale(timeScale >= 8 ? 1 : timeScale * 2);
   if (e.code === 'KeyR') { endRun(); resetState(); }
   if (e.code === 'KeyH') $('hints').classList.toggle('faded');
   if (e.code === 'KeyM') { muted = !muted; if (master) master.gain.value = muted ? 0 : 1; }
@@ -431,15 +431,18 @@ function gearbox(dt, vf, throttle) {
   car.shifter.set(a[0] + (b[0] - a[0]) * smooth01((u - 0.35) / 0.25), a[1] * (1 - smooth01(u / 0.35)) + b[1] * smooth01((u - 0.6) / 0.4));
 }
 
-// G: the car drives itself (sober, whatever you've had): holds the lane 1.7 m left of the centre by aiming
-// at a point on it a little way ahead, and slows for the tightest bend coming up. Touch W/A/S/D to take over.
+// G: the car drives itself (sober, whatever you've had): holds the lane 1.7 m left of the centre, swerves
+// across to line up with any hitchhiker still standing in the next 150 m, and slows for the tightest bend
+// coming up. Touch W/A/S/D to take over.
 function autopilot(f, vf) {
+  const tr = world.track, v = Math.abs(vf), sF = f.s + 1.4;                 // measured at the front axle
+  const kid = tr.itemsInS(f.s + 2, f.s + 150, 'hiker').find((h) => !h.state || h.state.mode === 'stand');
+  const lane = kid ? kid.lat : 1.7;
   // Stanley lane-keeping (the classic self-driving-car controller): the bend's own steering angle, minus the
   // heading error, plus the lane offset scaled down with speed
-  const tr = world.track, v = Math.abs(vf), sF = f.s + 1.4;                 // measured at the front axle
   const kRoad = (tr.at(sF + v * 0.15 + 2).h - tr.at(sF + v * 0.15 - 2).h) / 4;   // signed curvature, + = bends left
   const front = tr.at(sF), psi = angDiff(S.th, front.h);
-  const delta = Math.atan(T.wheelbase * kRoad) - psi + Math.atan((1.5 * (1.7 - f.lat)) / (v + 1));
+  const delta = Math.atan(T.wheelbase * kRoad) - psi + Math.atan((1.5 * (lane - f.lat)) / (v + 1));
   const steer = clamp(delta / (T.steerMax / (1 + v * T.steerFalloff)), -1, 1);
   let k = 0;                                                                // sharpest curvature (1/radius) in the next few seconds
   for (let d = 0; d < 30 + v * 3; d += 4) k = Math.max(k, Math.abs(tr.at(f.s + d + 4).h - tr.at(f.s + d).h) / 4);
@@ -615,7 +618,7 @@ function frame(now) {
   requestAnimationFrame(frame);
   tick(now);
 }
-let timeScale = 1;                                                          // G: 1x / 2x / 4x / 8x game speed
+let timeScale = 1;                                                          // F: 1x / 2x / 4x / 8x game speed
 function setTimeScale(k) {
   timeScale = k; $('speedBtn').textContent = `▶ ${k}x`;
   say(k > 1 ? `Speed ${k}x` : 'Normal speed', 2);
