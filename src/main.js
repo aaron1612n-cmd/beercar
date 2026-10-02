@@ -4,7 +4,7 @@ import { buildCar } from './car.js';
 import { buildDriver } from './driver.js';
 import { loadAssets } from './assets.js';
 import { buildGod } from './god.js';
-import { buildFly } from './fly.js';
+import { buildHitchhikers } from './hitchhikers.js';
 import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
@@ -80,7 +80,7 @@ const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(
 function say(text, secs = 2.2) { const m = $('msg'); m.textContent = text; m.style.opacity = 1; S.msgT = secs; }
 
 // ---- audio ------------------------------------------------------------------
-let actx, master, engA, engB, engG, bladeG, noiseBuf, muted = false;
+let actx, master, engA, engB, engG, bladeG, noiseBuf, squealG, squealBP, squealOsc, muted = false;
 function startAudio() {
   try {
     actx = new AudioContext(); master = actx.createGain(); master.connect(actx.destination);
@@ -97,6 +97,14 @@ function startAudio() {
     const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1300; bp.Q.value = 0.6;
     bladeG = actx.createGain(); bladeG.gain.value = 0;
     noise.connect(bp).connect(bladeG).connect(master); noise.start();
+    // tyre squeal: narrow-band noise plus a thin whistle, both swept by how hard the tyres are sliding
+    squealG = actx.createGain(); squealG.gain.value = 0; squealG.connect(master);
+    squealBP = actx.createBiquadFilter(); squealBP.type = 'bandpass'; squealBP.frequency.value = 1900; squealBP.Q.value = 9;
+    const sn = actx.createBufferSource(); sn.buffer = noiseBuf; sn.loop = true;
+    const snG = actx.createGain(); snG.gain.value = 3;
+    sn.connect(squealBP).connect(snG).connect(squealG); sn.start();
+    squealOsc = actx.createOscillator(); squealOsc.type = 'triangle'; squealOsc.frequency.value = 1850;
+    const soG = actx.createGain(); soG.gain.value = 0.12; squealOsc.connect(soG).connect(squealG); squealOsc.start();
   } catch { actx = null; }
 }
 // one-shot filtered noise burst
@@ -154,6 +162,8 @@ const SFX = {
   burp() { SFX.voice(78, 62, 0.55, [[500, 3], [900, 4]], 0.22); burst('lowpass', 300, 0.1, 0.45, 2); },
   cough() { for (let i = 0; i < 3; i++) setTimeout(() => { burst('bandpass', 480 + Math.random() * 150, 0.32, 0.16, 1.2); SFX.voice(200, 140, 0.12, [[600, 3]], 0.08); }, i * 230 + Math.random() * 40); },
   ash: () => burst('highpass', 3000, 0.02, 0.1),
+  chirp: (v) => { tone(2300 + Math.random() * 500, 1850, 0.012 + v * 0.03, 0.09); burst('bandpass', 2300, 0.015 + v * 0.04, 0.12, 5); },
+  gear: () => { tone(150, 95, 0.14, 0.09); burst('lowpass', 500, 0.12, 0.08, 2); setTimeout(() => tone(230, 170, 0.06, 0.05), 70); },
   boom: () => { burst('lowpass', 160, 0.9, 1.8, 0.7); tone(80, 28, 0.6, 1.4); burst('bandpass', 900, 0.35, 0.7, 0.6); setTimeout(() => burst('lowpass', 400, 0.25, 2.5, 0.5), 150); },
 };
 
@@ -241,6 +251,17 @@ const driver = buildDriver({ ...car, body: car.cabin }, {
   carVel: () => new THREE.Vector3(S.vx, 0, S.vz),
 }, assets.avatar, scene);
 
+// ---- hitchhikers on the shoulder (cloned from the driver's avatar before the hem clip is put on it) ----
+const HIT_LINES = ['THUNK!', 'Going his way!', 'He wanted a lift...', 'Airmail!', 'Sorry, full up!'];
+const hikers = buildHitchhikers(scene, assets.avatar, world.track, {
+  onHit: (pos, speed) => {
+    SFX.thump(speed); burst('lowpass', 260, 0.5, 0.35, 1.5);
+    SFX.voice(240, 480, 0.35, [[750, 5], [1150, 6]], 0.14); setTimeout(() => SFX.voice(520, 180, 0.7, [[700, 5], [1100, 6]], 0.12), 330);
+    S.shake = Math.max(S.shake, 0.08); say(HIT_LINES[(Math.random() * HIT_LINES.length) | 0], 1.4);
+  },
+  onBounce: (pos, v) => { SFX.thump(v * 1.5); puffSmoke(pos.clone().setY(0.1), v3b.set(0, 0.3, 0), 0.6, 4, { life: 1.2, s0: 0.15, s1: 0.8, a: 0.35, color: 0x9a8a70 }); },
+});
+
 // ---- God: Alt+F+4 summons Him; He keeps pace in front of the car and restocks you through the roof ----
 const holyLight = new THREE.PointLight(0xfff4dc, 0, 45, 1.2); scene.add(holyLight);    // added up-front so no shader recompiles later
 const god = buildGod(scene, assets.avatar, holyLight, {
@@ -258,9 +279,6 @@ const god = buildGod(scene, assets.avatar, holyLight, {
   addBeer: () => driver.addBeer(),
   addCigar: () => driver.addCigar(),
 });
-// ---- FLY MODE: the giant fruit fly in the driver's seat (fly.js) ----
-const fly = buildFly({ scene, renderer, car, say });
-let mode = 'you';
 let flashAmt = 0;
 const flash = (a) => { flashAmt = a; };
 const summonGod = () => god.summon(new THREE.Vector3(S.x, 0, S.z), S.th, heightAt, () => S);
@@ -273,27 +291,29 @@ car.cabin.traverse((o) => { if (o.name === 'Wolf3D_Outfit_Top') o.material.clipp
 // ---- state ------------------------------------------------------------------
 const S = {};
 function resetState() {
-  Object.assign(S, { dist: 0, beatBest: false, cruise: 20, crashT: 0, x: 1.7, z: 0, th: 0, vx: 0, vz: 0, steer: 0, yawRate: 0, pitch: 0, roll: 0, camTh: 0, shake: 0, msgT: 0, drunk: 0, yaw: 0, look: -0.34, restock: 0 });
+  Object.assign(S, { dist: 0, beatBest: false, crashT: 0, x: 1.7, z: 0, th: 0, vx: 0, vz: 0, steer: 0, yawRate: 0, pitch: 0, roll: 0, camTh: 0, shake: 0, msgT: 0, drunk: 0, yaw: 0, look: -0.34, restock: 0,
+    s: 0, lat: 1.7, ri: undefined, sPrev: undefined, drift: 0, gear: 1, shiftFrom: 1, shiftT: 0, rpm: 800, lurch: 0, chirpT: 0, tyreT: 0 });
   $('msg').style.opacity = 0;
 }
 resetState();
 
-// ---- the goal: miles down the road without crashing; best run per mode, kept in the browser ----
-const BEST_KEY = 'beercar.best.v1';
-let best = { you: 0, fly: 0 };
-try { Object.assign(best, JSON.parse(localStorage.getItem(BEST_KEY)) || {}); } catch { /* private mode */ }
+// ---- the goal: miles down the road without crashing; best run kept in the browser ----
+// (v2: v1 bests were set on the old straight road)
+const BEST_KEY = 'beercar.best.v2';
+let best = 0;
+try { best = Number(JSON.parse(localStorage.getItem(BEST_KEY))) || 0; } catch { /* private mode */ }
 const saveBest = () => { try { localStorage.setItem(BEST_KEY, JSON.stringify(best)); } catch { /* storage blocked */ } };
 const miles = (m) => (m / 1609.34).toFixed(2);
 function endRun() {
-  if (S.dist > 50) say(S.beatBest ? `NEW BEST: ${miles(S.dist)} mi!` : `Run over: ${miles(S.dist)} mi (best ${miles(best[mode])})`, 3);
+  if (S.dist > 50) say(S.beatBest ? `NEW BEST: ${miles(S.dist)} mi!` : `Run over: ${miles(S.dist)} mi (best ${miles(best)})`, 3);
   saveBest(); S.dist = 0; S.beatBest = false;
 }
 function goal() {
-  if (S.dist > best[mode]) {
-    if (!S.beatBest && best[mode] > 50) say('NEW BEST!', 2);
-    best[mode] = S.dist; S.beatBest = true;
+  if (S.dist > best) {
+    if (!S.beatBest && best > 50) say('NEW BEST!', 2);
+    best = S.dist; S.beatBest = true;
   }
-  $('goalRun').textContent = miles(S.dist); $('goalBest').textContent = miles(best[mode]);
+  $('goalRun').textContent = miles(S.dist); $('goalBest').textContent = miles(best);
 }
 addEventListener('pagehide', saveBest);
 
@@ -302,30 +322,21 @@ const keys = new Set();
 let camMode = 0;   // 0 first person, 1 chase
 const overlayUp = () => $('overlay').style.display !== 'none';
 function lockMouse() { try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch { /* unsupported */ } }
-const HINTS = { you: $('hints').innerHTML,
-  fly: '<kbd>W</kbd><kbd>S</kbd> cruise speed &nbsp; hold <kbd>A</kbd><kbd>D</kbd> teach the fly &nbsp; <kbd>Space</kbd> brake &nbsp; Mouse look<br><kbd>T</kbd> lesson / solo &nbsp; <kbd>`</kbd> pour it a beer &nbsp; <kbd>X</kbd> wipe its training<br><kbd>C</kbd> camera &nbsp; <kbd>G</kbd> speed &nbsp; <kbd>R</kbd> reset &nbsp; <kbd>M</kbd> mute &nbsp; <kbd>H</kbd> help &nbsp; <kbd>Esc</kbd> menu' };
-function startGame(m) {
+function startGame() {
   $('overlay').style.display = 'none';
   setTimeout(() => $('hints').classList.add('faded'), 12000);
   if (!actx) startAudio();
-  if (m !== mode) { saveBest(); mode = m; resetState(); respawn(); camMode = m === 'fly' ? 1 : 0; }
-  assets.avatar.scene.visible = mode === 'you';
-  $('hud').style.display = mode === 'you' ? '' : 'none';
-  $('hints').innerHTML = HINTS[mode];
-  fly.setActive(mode === 'fly');
   lockMouse();
 }
 function showMenu() {
   $('overlay').style.display = 'grid'; saveBest();
-  fly.setActive(false);
   if (document.pointerLockElement) document.exitPointerLock();
 }
 addEventListener('keydown', (e) => {
   if (e.repeat) return;
   keys.add(e.code);
   if (overlayUp()) {
-    if (e.code === 'Digit1' || e.code === 'Numpad1' || e.code === 'Enter') startGame('you');
-    if (e.code === 'Digit2' || e.code === 'Numpad2') startGame('fly');
+    if (e.code === 'Enter' || e.code === 'Space' || e.code === 'Digit1' || e.code === 'Numpad1') startGame();
     return;
   }
   if (e.code === 'Escape') { showMenu(); return; }
@@ -336,21 +347,14 @@ addEventListener('keydown', (e) => {
   if (e.code === 'KeyR') { endRun(); resetState(); }
   if (e.code === 'KeyH') $('hints').classList.toggle('faded');
   if (e.code === 'KeyM') { muted = !muted; if (master) master.gain.value = muted ? 0 : 1; }
-  if (mode === 'fly') {
-    if (e.code === 'Backquote') fly.pour();
-    if (e.code === 'KeyT') fly.toggleMode();
-    if (e.code === 'KeyX') fly.forget();
-  } else {
-    if (e.code === 'Backquote') driver.start('beer');
-    if (e.code === 'KeyQ') driver.start('cigar');
-  }
+  if (e.code === 'Backquote') driver.start('beer');
+  if (e.code === 'KeyQ') driver.start('cigar');
   if (e.code === 'Space' || e.code === 'Backquote') e.preventDefault();
 });
 addEventListener('keyup', (e) => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
 $('speedBtn').addEventListener('click', () => setTimeScale(timeScale >= 8 ? 1 : timeScale * 2));
-$('playYou').addEventListener('click', () => startGame('you'));
-$('playFly').addEventListener('click', () => startGame('fly'));
+$('playYou').addEventListener('click', () => startGame());
 canvas.addEventListener('click', () => { if (document.pointerLockElement !== canvas) lockMouse(); });
 addEventListener('mousemove', (e) => {
   if (document.pointerLockElement !== canvas) return;
@@ -366,6 +370,7 @@ function hud(vf) {
   $('beer').textContent = `${st.bottleState === 'none' ? 'no bottle' : `${Math.round(st.fill * 100)}%`} · ${st.beers} in carrier`;
   $('cigars').textContent = `${st.cigState === 'hand' ? `${Math.round((st.cigLen / 0.14) * 100)}%` : 'none lit'} · ${st.cigars} in box`;
   $('buzz').firstElementChild.style.width = Math.min(100, (S.drunk / DRUNK_MAX) * 100) + '%';
+  $('gear').textContent = S.gear === 0 ? 'R' : S.gear;
   $('mph').textContent = S.drunk > 2.5 && Math.sin(clock * 3.1) > 0.4 ? '??' : Math.round(Math.abs(vf) * 2.237 * (1 + (S.drunk > 1.5 ? Math.sin(clock * 5) * 0.3 : 0)));
 }
 
@@ -386,66 +391,116 @@ function crash(what) {
   puffSmoke(v3.set(S.x, 1.2, S.z), v3b.set(0, 3.5, 0), 3.5, 40, { life: 4, s0: 0.8, s1: 5, a: 0.7, color: 0x2a2522 });   // black smoke
   car.root.visible = false;
   say(`BOOM! Hit a ${what}`, 2);
-  if (mode === 'fly') fly.crashed();
   setTimeout(endRun, 0);
 }
-function respawn() {                                                        // keeps the buzz and the distance
-  Object.assign(S, { crashT: 0, x: 1.7, th: 0, vx: 0, vz: 0, steer: 0, yawRate: 0, camTh: 0 });
+function respawn() {                                                        // back in the lane where it happened; keeps the buzz and the distance
+  const p = world.track.at(S.s || 0), lat = 1.7;
+  Object.assign(S, { crashT: 0, x: p.x + Math.cos(p.h) * lat, z: p.z - Math.sin(p.h) * lat, th: p.h, vx: 0, vz: 0, steer: 0, yawRate: 0, camTh: p.h, drift: 0, ri: undefined, sPrev: undefined });
   car.root.visible = true;
+}
+
+// ---- gearbox: an automatic 4-speed you can see and hear (the stick moves, the driver's hand works it) ----
+const GEARS = [12, 21, 30, 40];                                              // top speed (m/s) in 1st..4th
+const GATE = [[1.7, 1], [1, 1], [1, -1], [-1, 1], [-1, -1]];                // shifter gate (left, forward) for R, 1..4
+const SHIFT_T = 0.4;
+const smooth01 = (u) => (u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u));
+function shift(to) {
+  S.shiftFrom = S.gear; S.gear = to; S.shiftT = SHIFT_T;
+  SFX.gear();
+  driver.shift();
+  if (to > S.shiftFrom && S.shiftFrom > 0) S.lurch = 0.02;                  // the car sits back as the next gear bites
+}
+function gearbox(dt, vf, throttle) {
+  const v = Math.abs(vf);
+  if (S.shiftT > 0) S.shiftT = Math.max(0, S.shiftT - dt);
+  else if (vf < -0.3 && throttle < 0 && S.gear !== 0) shift(0);           // only when you're backing up, not bounced back
+  else if (S.gear === 0 && vf > -0.1 && throttle > 0) shift(1);
+  else if (S.gear > 0) {
+    const r = 800 + (v / GEARS[S.gear - 1]) * 5200;
+    if (r > 5400 && S.gear < 4 && throttle > 0) shift(S.gear + 1);
+    else if (r < 2000 && S.gear > 1) shift(S.gear - 1);
+  }
+  let rpm = Math.min(6300, 800 + (v / (S.gear === 0 ? 8 : GEARS[S.gear - 1])) * 5200);
+  if (S.gear === 1 && throttle > 0 && v < 4) rpm = Math.max(rpm, 2600);     // slipping the clutch off the line
+  if (S.drift > 0.3 && throttle > 0) rpm = Math.min(6300, rpm + 1200 * S.drift);   // wheelspin
+  if (S.shiftT > 0) rpm *= 0.78;
+  S.rpm += (rpm - S.rpm) * Math.min(1, 12 * dt);
+  // the stick: out of the old gate to neutral, across, into the new gate
+  const u = 1 - S.shiftT / SHIFT_T, a = GATE[S.shiftFrom], b = GATE[S.gear];
+  car.shifter.set(a[0] + (b[0] - a[0]) * smooth01((u - 0.35) / 0.25), a[1] * (1 - smooth01(u / 0.35)) + b[1] * smooth01((u - 0.6) / 0.4));
 }
 
 function step(dt) {
   if (S.crashT > 0) { if ((S.crashT -= dt) <= 0) respawn(); return 0; }
   let throttle = (down('KeyW', 'ArrowUp') ? 1 : 0) - (down('KeyS', 'ArrowDown') ? 1 : 0);
   let steerIn = (down('KeyA', 'ArrowLeft') ? 1 : 0) - (down('KeyD', 'ArrowRight') ? 1 : 0);
-  const braking = down('Space');
-  let sober = false;                                                        // the instructor drives sober
-  if (mode === 'fly') {                                                     // the fly steers; W/S set the cruise speed
-    S.cruise = clamp(S.cruise + throttle * 8 * dt, 0, T.maxFwd);
-    throttle = clamp((S.cruise - (S.vx * Math.sin(S.th) + S.vz * Math.cos(S.th))) * 0.5, -1, 1);
-    const out = fly.update(dt, S, steerIn ? steerIn : null);
-    steerIn = out.steer || 0; sober = !!out.instructor;
-    if (Math.abs(S.x) > 25) { respawn(); endRun(); say('The fly got lost in a field. Run over', 2); return 0; }
-    if (out.drank) S.drunk = Math.min(DRUNK_MAX, S.drunk + out.drank * 4);
-  }
-  if (S.invT > 0 && !sober) steerIn = -steerIn;                                       // which way is left?
-  if (S.drunk > 0.05 && !sober) steerIn = clamp(steerIn + Math.min(0.7, S.drunk * 0.22) * Math.sin(clock * 0.6 + Math.sin(clock * 0.23) * 3), -1, 1);
-  const dx = Math.sin(S.th), dz = Math.cos(S.th);
-  let vf = S.vx * dx + S.vz * dz;
-  let latx = S.vx - dx * vf, latz = S.vz - dz * vf;
-  const vf0 = vf;
+  const handbrake = down('Space');                                          // locks the rears
+  let vf = S.vx * Math.sin(S.th) + S.vz * Math.cos(S.th);                   // forward speed coming into this step
+  // where the car is on the road: s along it, lat metres left of the centre
+  const f = world.track.frame(S.x, S.z, S.ri);
+  S.ri = f.i; S.s = f.s; S.lat = f.lat;
+  if (S.invT > 0) steerIn = -steerIn;                                       // which way is left?
+  if (S.drunk > 0.05) steerIn = clamp(steerIn + Math.min(0.7, S.drunk * 0.22) * Math.sin(clock * 0.6 + Math.sin(clock * 0.23) * 3), -1, 1);
 
-  // longitudinal: power fades toward top speed; coast = rolling + air drag
-  if (throttle) {
-    const opposing = throttle * vf < -0.05;
-    vf += throttle * (opposing ? T.brake : T.accel * Math.max(0.1, 1 - Math.abs(vf) / T.maxFwd)) * dt;
-  } else {
-    const f = (T.coast + T.drag * vf * vf) * dt;
-    vf = Math.abs(vf) <= f ? 0 : vf - Math.sign(vf) * f;
-  }
-  if (braking) { const f = T.brake * dt; vf = Math.abs(vf) <= f ? 0 : vf - Math.sign(vf) * f; }
-  vf = clamp(vf, -T.maxRev, T.maxFwd);
+  // drift (arcade): the handbrake, or stamping on the brake into a bend, lets the back end go; it then
+  // holds for as long as you stay on the gas and keep steering, and tidies itself up when you stop
+  let dWant = 0;
+  if (handbrake && Math.abs(vf) > 6) dWant = 1;
+  else if (throttle < 0 && vf > 12 && Math.abs(steerIn) > 0.5) dWant = 0.8;
+  else if (S.drift > 0.15 && throttle > 0 && steerIn && Math.abs(vf) > 6) dWant = 0.7;
+  const drift0 = S.drift;
+  S.drift += (dWant - S.drift) * Math.min(1, (dWant > S.drift ? 6 : 1.8) * dt);
+  if (drift0 < 0.4 && S.drift >= 0.4) SFX.chirp(1);
 
-  // steering
+  // steering: the body yaws first, then the tyres drag the velocity round after it (less so in a drift)
   const lock = T.steerMax / (1 + Math.abs(vf) * T.steerFalloff);
   const want = steerIn * lock, dSt = T.steerRate * dt;
   S.steer += clamp(want - S.steer, -dSt, dSt);
   if (!steerIn) S.steer *= Math.exp(-5 * dt);
-  const kin = (vf * Math.tan(S.steer)) / T.wheelbase, cap = T.latG / Math.max(1, Math.abs(vf));
+  const kick = handbrake ? steerIn * 1.3 * Math.sign(vf) : 0;               // a yanked handbrake swings the tail
+  const kin = ((vf * Math.tan(S.steer)) / T.wheelbase) * (1 + 1.7 * S.drift) + kick;
+  const cap = (T.latG * (1 + 2.2 * S.drift)) / Math.max(1, Math.abs(vf)) + Math.abs(kick);
   S.yawRate = (S.yawRate || 0) + (clamp(kin, -cap, cap) - (S.yawRate || 0)) * Math.min(1, T.yawResp * dt);
-  const omega = S.yawRate;
-
-  const g = Math.exp(-T.grip * dt); latx *= g; latz *= g;
-
-  S.th += omega * dt;
+  S.th += S.yawRate * dt;
   const nx = Math.sin(S.th), nz = Math.cos(S.th);
+  vf = S.vx * nx + S.vz * nz;
+  let latx = S.vx - nx * vf, latz = S.vz - nz * vf;
+  const vf0 = vf, slip = Math.atan2(Math.hypot(latx, latz), Math.abs(vf) + 0.01);
+  if (slip > 0.96) S.yawRate *= Math.exp(-6 * dt);                          // ~55 deg is as sideways as it gets
+
+  // longitudinal: power fades toward top speed; coast = rolling + air drag; no drive while a gear goes in
+  const power = S.shiftT > 0 && S.gear > S.shiftFrom ? 0 : 1;
+  if (throttle) {
+    const opposing = throttle * vf < -0.05;
+    vf += throttle * (opposing ? T.brake : T.accel * power * Math.max(0.1, 1 - Math.abs(vf) / T.maxFwd)) * dt;
+  } else {
+    const f2 = (T.coast + T.drag * vf * vf) * dt;
+    vf = Math.abs(vf) <= f2 ? 0 : vf - Math.sign(vf) * f2;
+  }
+  if (handbrake) { const f2 = 7 * dt; vf = Math.abs(vf) <= f2 ? 0 : vf - Math.sign(vf) * f2; }
+  // lateral grip; in a drift most of the sideways speed the tyres scrub off is handed back as forward speed
+  const lat0 = Math.hypot(latx, latz), g = Math.exp(-T.grip * (1 - 0.85 * S.drift) * dt);
+  latx *= g; latz *= g;
+  if (S.drift > 0 && vf) vf += Math.sign(vf) * lat0 * (1 - g) * 0.7 * S.drift;
+  vf = clamp(vf, -T.maxRev, T.maxFwd);
+  gearbox(dt, vf, throttle);
+
   S.vx = nx * vf + latx; S.vz = nz * vf + latz;
   S.x += S.vx * dt; S.z += S.vz * dt;
-  S.dist += Math.max(0, S.vz * dt);                                         // progress down the road
-  for (const d of [1.3, -1.2]) {                                            // nose and tail circles vs trees / posts / poles
+  const ds = f.s - (S.sPrev ?? f.s); S.sPrev = f.s;                         // progress along the road
+  if (ds > 0 && ds < 10 && Math.abs(f.lat) < 15) S.dist += ds;
+  for (const d of [1.3, -1.2]) {                                            // nose and tail circles vs trees / posts / poles / signs
     const hit = world.obstacleAt(S.x + nx * d, S.z + nz * d, 0.8);
-    if (hit) { crash(hit); return 0; }
+    if (!hit) continue;
+    if (Math.hypot(S.vx, S.vz) > 4.47) { crash(hit); return 0; }            // over 10 mph: fireball
+    // a nudge: back out of it and bounce off, no explosion
+    S.x -= S.vx * dt; S.z -= S.vz * dt; S.vx *= -0.3; S.vz *= -0.3; vf *= -0.3;
+    if (!(S.bumpT > 0)) { S.bumpT = 0.5; SFX.thump(4); S.shake = Math.max(S.shake, 0.04); say(`Bumped a ${hit}`, 1); }
+    break;
   }
+  S.bumpT = (S.bumpT || 0) - dt;
+  if (hikers.hit([[S.x + nx * 1.3, S.z + nz * 1.3, 0.8], [S.x, S.z, 0.8]], S.vx, S.vz)) { S.vx *= 0.9; S.vz *= 0.9; }
+  const omega = S.yawRate;
 
   // pose + jolt for the cigar ash (hard throttle/brake, cornering, road rumble)
   const accelNow = (vf - vf0) / Math.max(dt, 1e-3);
@@ -456,17 +511,31 @@ function step(dt) {
   const buzz = Math.sin(clock * 70) * 0.0012 * (0.4 + rpm) + Math.sin(clock * 9) * 0.0008 * rpm;
   car.root.position.set(S.x, 0, S.z);
   car.root.rotation.y = S.th;
-  car.body.rotation.set(S.pitch + buzz, 0, S.roll);
+  S.lurch *= Math.exp(-6 * dt);
+  car.body.rotation.set(S.pitch + buzz - S.lurch, 0, S.roll);
   car.body.position.y = buzz * 0.5;
   car.body.updateMatrixWorld(); hem.copy(hemBase).applyMatrix4(car.body.matrixWorld);
   for (const w of car.wheels) { w.spin.rotation.x += (vf * dt) / w.r; if (w.front) w.pivot.rotation.y = S.steer; }
 
+  // tyres: squeal with the slide (or a locked handbrake), little chirps on top, smoke off the rear wheels
+  const squeal = Math.max(Math.abs(vf) > 4 ? clamp((slip - 0.1) / 0.5, 0, 1) : 0, handbrake && Math.abs(vf) > 3 ? 0.6 : 0);
+  if (squeal > 0.15 && (S.chirpT -= dt) <= 0) { S.chirpT = 0.12 + Math.random() * 0.3; SFX.chirp(squeal * 0.5); }
+  if (squeal > 0.25 && (S.tyreT -= dt) <= 0) {
+    S.tyreT = 0.07;
+    for (const w of car.wheels) if (!w.front) {
+      w.pivot.getWorldPosition(v3); v3.y = 0.2;
+      puffSmoke(v3, v3b.set(S.vx * 0.15, 0.4, S.vz * 0.15), 0.8, 1, { life: 1.8, s0: 0.25, s1: 1.6 + squeal, a: 0.22 + squeal * 0.15, color: 0xd8d4ce });
+    }
+  }
   if (actx) {
-    const gear = Math.min(4, Math.floor(rpm * 5)), f = 30 + (rpm * 5 - gear) * 45 + gear * 4 + (throttle ? 6 : 0);
-    engA.frequency.setTargetAtTime(f, actx.currentTime, 0.1);
-    engB.frequency.setTargetAtTime(f / 2, actx.currentTime, 0.1);
-    engG.gain.setTargetAtTime(0.05 + rpm * 0.04 + (throttle ? 0.02 : 0), actx.currentTime, 0.1);
-    bladeG.gain.setTargetAtTime(rpm * 0.08, actx.currentTime, 0.2);        // wind + tyre roar
+    const t = actx.currentTime, f = 22 + (S.rpm / 6000) * 88;
+    engA.frequency.setTargetAtTime(f, t, 0.05);
+    engB.frequency.setTargetAtTime(f / 2, t, 0.05);
+    engG.gain.setTargetAtTime(0.04 + (S.rpm / 6000) * 0.05 + (throttle > 0 && power ? 0.025 : 0), t, 0.08);
+    bladeG.gain.setTargetAtTime(rpm * 0.08, t, 0.2);                       // wind + tyre roar
+    squealG.gain.setTargetAtTime(squeal * 0.07, t, 0.05);
+    squealBP.frequency.setTargetAtTime(1600 + squeal * 900 + Math.sin(clock * 23) * 60, t, 0.05);
+    squealOsc.frequency.setTargetAtTime(1750 + squeal * 700 + Math.sin(clock * 31) * 40, t, 0.05);
   }
   return vf;
 }
@@ -476,10 +545,7 @@ const qSway = new THREE.Quaternion(), eSway = new THREE.Euler();
 function updateCamera(dt, vf) {
   if (camMode === 0) {
     if (camera.fov !== T.fov) { camera.fov = T.fov; camera.updateProjectionMatrix(); }
-    if (mode === 'fly') {                                                // mouse look turns the camera, not the fly's eyes
-      fly.viewFrom(camera.position, camera.quaternion);
-      camera.quaternion.multiply(qFlip).multiply(qSway.setFromEuler(eSway.set(S.look + 0.3, S.yaw, 0, 'YXZ')));
-    } else { driver.eyeWorld(camera.position); driver.headQuatWorld(camera.quaternion).multiply(qFlip); }
+    driver.eyeWorld(camera.position); driver.headQuatWorld(camera.quaternion).multiply(qFlip);
     const d = Math.min(S.drunk, 2.6);
     if (d > 0.02) camera.quaternion.multiply(qSway.setFromEuler(eSway.set(Math.sin(clock * 0.7) * 0.05 * d, Math.sin(clock * 0.53) * 0.07 * d, Math.sin(clock * 0.8) * 0.1 * d)));
   } else {
@@ -533,7 +599,7 @@ function frame(now) {
 let timeScale = 1;                                                          // G: 1x / 2x / 4x / 8x game speed
 function setTimeScale(k) {
   timeScale = k; $('speedBtn').textContent = `▶ ${k}x`;
-  say(k > 1 ? `Speed ${k}x${mode === 'fly' ? ' (its brain can only think so fast, so it reacts slower)' : ''}` : 'Normal speed', 2);
+  say(k > 1 ? `Speed ${k}x` : 'Normal speed', 2);
 }
 function tick(now) {
   const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = Math.max(last, now);
@@ -543,7 +609,7 @@ function tick(now) {
 }
 function sim(dt) {
   const vf = overlayUp() ? 0 : step(dt);
-  if (mode === 'you') driver.update(dt, { steerAngle: S.steer * 3.2, yaw: S.yaw, pitch: S.look, firstPerson: camMode === 0,
+  driver.update(dt, { steerAngle: S.steer * 3.2, yaw: S.yaw, pitch: S.look, firstPerson: camMode === 0,
     deck: { on: false }, jolt: S.jolt || 0 });
   if (driver.cigarLit && (S.wisp = (S.wisp ?? 0) - dt) <= 0) {
     S.wisp = 0.3;
@@ -564,6 +630,7 @@ function sim(dt) {
   // drunk: hiccups, and past ~0.3 the HUD itself starts to lean
   if (S.drunk > 0.3 && (S.hicT = (S.hicT ?? 5) - dt) <= 0) { S.hicT = 3 + Math.random() * 7 / S.drunk; SFX.hic(); S.shake = Math.max(S.shake, 0.02 * S.drunk); say('*hic*', 0.7); }
   $('hud').style.transform = S.drunk > 0.2 ? `rotate(${(Math.sin(clock * 0.9) * S.drunk * 3).toFixed(2)}deg)` : '';
+  hikers.update(dt, S.s);
   updateSmoke(dt); updateShards(dt);
   return vf;
 }
@@ -593,6 +660,6 @@ function warmUp() {
 warmUp();
 requestAnimationFrame(frame);
 // debug handle for headless checks; step(n, dt) advances the game when rAF is paused (hidden tab)
-window.__car = { S, T, keys, car, driver, world, god, summonGod, camera, renderer, fly, startGame, showMenu, setTimeScale, setCam: (m) => { camMode = m; },
+window.__car = { S, T, keys, car, driver, world, god, hikers, summonGod, camera, renderer, startGame, showMenu, setTimeScale, setCam: (m) => { camMode = m; },
   step: (n = 1, dt = 1 / 60) => { for (let i = 0; i < n; i++) tick(last + dt * 1000); },
   cam: (p, t) => { debugCam = p ? { p: new THREE.Vector3(...p), t: new THREE.Vector3(...t) } : null; } };

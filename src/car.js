@@ -83,6 +83,18 @@ export function buildCar(gltf) {
   ks.add(cyl(0.022, 0.022, 0.004, 24), { m: M(0, 0.029, 0), ...chrome });
   spinner.add(ks.build(mat));
 
+  // ---- floor shifter on the console, ahead of the cupholder: pivots at the boot; set(gx, gz) tilts it
+  // into a gate (gx +1 = toward the driver, gz +1 = forward). `knob` is what the right hand grabs.
+  const shifter = new THREE.Group(); shifter.position.set(0, 0.5, 0.1); body.add(shifter);
+  const rubber = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.9 });
+  const boot = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.045, 0.06, 16).translate(0, 0.03, 0), rubber); body.add(boot); boot.position.copy(shifter.position);
+  const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.012, 0.2, 10).translate(0, 0.1, 0), new THREE.MeshStandardMaterial({ color: C.chrome, roughness: 0.12, metalness: 1 }));
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.026, 20, 14), new THREE.MeshStandardMaterial({ color: 0x0c0c0c, roughness: 0.25 }));
+  knob.position.y = 0.21; knob.userData.r = 0.026;
+  for (const m of [boot, stick, knob]) m.castShadow = true;
+  shifter.add(stick, knob);
+  shifter.knob = knob;
+  shifter.set = (gx, gz) => shifter.rotation.set(gz * 0.28, 0, -gx * 0.13);
 
-  return { root, body, cabin, wheels, spinner, wheelGroup, RIM, cupholder, sixPack, cigarBox, feet, maxDrinkTilt: 1.85 };
+  return { root, body, cabin, wheels, spinner, wheelGroup, RIM, cupholder, sixPack, cigarBox, feet, shifter, maxDrinkTilt: 1.85 };
 }

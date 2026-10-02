@@ -42,6 +42,7 @@ const FP = {
   smoke: { f: [[0.28, 0.3, 0.18, 0.2], [0.28, 0.34, 0.2, -0.16], [0.95, 1.25, 0.72, -0.04], [1.05, 1.3, 0.78, -0.08]], t: [0.35, 0.2, 0.35, 0.3] },
   lighter: { f: [[1.3, 1.6, 1.0, 0.04], [1.3, 1.6, 1.0, 0], [1.3, 1.6, 1.0, -0.05], [1.3, 1.6, 1.0, -0.1]], t: [0.3, 0.1, 0.1, 0.05] },
   flick: { f: [[0.05, 0.05, 0.02, 0.15], [0.05, 0.08, 0.04, -0.05], [0.3, 0.4, 0.3, -0.1], [0.35, 0.45, 0.3, -0.18]], t: [0.1, 0.05, 0.05, 0.05] },
+  knob: { f: [[1.2, 1.4, 0.9, 0.12], [1.2, 1.4, 0.9, 0], [1.2, 1.4, 0.9, -0.12], [1.2, 1.4, 0.9, -0.22]], t: [0.8, 0.5, 0.6, 0.5] },
 };
 const fpLerp = (a, b, u) => ({ f: a.f.map((r, i) => r.map((v, j) => v + (b.f[i][j] - v) * u)), t: a.t.map((v, i) => v + (b.t[i] - v) * u) });
 
@@ -52,7 +53,7 @@ const CIG_AT_MOUTH = Q().setFromAxisAngle(V(0, 1, 0), 0.35).multiply(Q().setFrom
 const FIRST_PERSON_HIDE = ['Wolf3D_Head', 'Wolf3D_Teeth', 'EyeLeft', 'EyeRight', 'Wolf3D_Beard', 'Wolf3D_Headwear'];
 
 export function buildDriver(car, hooks, gltf, scene) {
-  const { body, spinner, wheelGroup, RIM, cupholder, sixPack, cigarBox } = car;
+  const { body, spinner, wheelGroup, RIM, cupholder, sixPack, cigarBox, shifter } = car;
   const maxTilt = car.maxDrinkTilt ?? 9;                    // bottle tip (rad, head frame) the roof allows
   const feet = car.feet ?? { x: 0.29, ankle: V(0, 0.53, 0.3), toe: V(0, 0.47, 0.48) };   // body frame; x = half the stance
 
@@ -356,6 +357,8 @@ export function buildDriver(car, hooks, gltf, scene) {
     cigBox: () => handFromCig(cigItem.box(), hand[1], FP.smoke),
     flickWind: () => pose(V(0.3, 1.25, -0.15), qe(-0.4, 0.8, 1.0), FP.smoke),
     flickRelease: () => pose(V(0.62, 1.2, 0.18), qe(-0.9, 1.3, 1.5), FP.flick),
+    // palm cupped over the top of the gear knob, fingers draped down its front; follows the knob as it moves
+    shift: () => pose(body.worldToLocal(shifter.knob.getWorldPosition(V())).add(V(0, shifter.knob.userData.r + 0.008, -0.012)), frame(V(0, -1, 0), V(-0.25, -0.35, 1)), FP.knob),
     lighter: () => {                                                      // zippo flame under the cigar tip
       const c = cigItem.mouth(), tip = V(0, CIG_L / 2 + 0.005, 0).applyQuaternion(c.q).add(c.p);
       return pose(tip.add(V(-0.035, -0.09, 0.0)), frame(V(1, 0, 0.3), V(0, 0.3, 1)), FP.lighter);
@@ -485,6 +488,13 @@ export function buildDriver(car, hooks, gltf, scene) {
       { to: 'wheel', dur: 0.5, onEnd: () => { zippo.visible = false; } },
     ] };
   }
+  // gear change: the right hand drops to the knob, rides it through the gate, and goes back to the wheel
+  // (if that hand is busy with a beer, the stick just moves on its own)
+  function shift() {
+    if (hand[-1].track) return false;
+    hand[-1].track = { i: 0, steps: [{ to: 'shift', dur: 0.14 }, { to: 'shift', dur: 0.3 }, { to: 'wheel', dur: 0.3 }] };
+    return true;
+  }
   function start(kind) {
     if (kind === 'beer') {
       if (hand[-1].track) { if (chug) { chug.press(); return true; } return false; }
@@ -594,7 +604,8 @@ export function buildDriver(car, hooks, gltf, scene) {
           flame.scale.set(0.02 + Math.random() * 0.004, 0.042 + Math.random() * 0.012, 1);
         }
         const zipDist = (w) => zippo.visible ? w.distanceTo(zippo.getWorldPosition(V())) - 0.02 : 1;
-        applyFingers(h, hp.fp, (w) => Math.min(rimDist(w), bottleDist(w), zipDist(w)));
+        const knobW = shifter.knob.getWorldPosition(V()), knobDist = (w) => w.distanceTo(knobW) - shifter.knob.userData.r;
+        applyFingers(h, hp.fp, (w) => Math.min(rimDist(w), bottleDist(w), zipDist(w), knobDist(w)));
       } else {
         const holding = st.cigState === 'hand';
         applyFingers(h, hp.fp, rimDist, holding ? [0, 1] : []);
@@ -619,7 +630,7 @@ export function buildDriver(car, hooks, gltf, scene) {
   }
 
   return {
-    st, start, update, litter, hands: hand, bones: B,
+    st, start, shift, update, litter, hands: hand, bones: B,
     // refills (God): where each empty slot is, and filling it
     beerSlot: (i) => packBottles[Math.min(5, i)].group.getWorldPosition(V()).add(V(0, 0.12, 0)),
     cigarSlot: (i) => boxCigars[Math.min(2, i)].getWorldPosition(V()),

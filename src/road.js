@@ -1,20 +1,21 @@
-// The world: HDRI sky + lights, PBR grass, an endless straight road along z (x = 0), and trees +
-// roadside furniture generated in 64 m chunks. Chunks are created deterministically (seeded by
-// their grid index) when they come within range of the car and dropped when they leave it, so
-// driving back to a spot shows exactly what was there before. The road strip and the grass plane
-// just follow the car, snapping by whole texture periods so the surface never visibly moves.
+// The world: HDRI sky + lights, PBR grass, an endless winding road (track.js: straights, bends, hairpins),
+// and trees generated in 64 m chunks. Chunks are created deterministically (seeded by their grid index)
+// when they come within range of the car and dropped when they leave it, so driving back to a spot
+// shows exactly what was there before. The asphalt is a ribbon mesh laid along the centreline around
+// the car; posts, poles, wires and chevron signs come from the track's roadside items.
 import * as THREE from 'three';
 import { buildTrees, rng, VARIANTS } from './trees.js';
+import { makeTrack, STEP } from './track.js';
 
 export const SUN_DIR = new THREE.Vector3(0.4, 0.7, 0.3).normalize();   // replaced from the HDR in buildWorld
 export const heightAt = () => 0;                                         // flat; the driver's litter physics asks
 export const ROAD_W = 10;                                                // asphalt 8 m + 1 m gravel each side
 
 const PERIOD = 12;                     // road texture period (m) = dash period
-const ROAD_LEN = PERIOD * 70;          // 840 m strip
+const BEHIND = 250, AHEAD = 450;       // asphalt ribbon around the car (m of road); fog hides the far end
+const ROWS = (BEHIND + AHEAD) / STEP + 1;
 const CH = 64, RANGE = 5;              // chunk size (m); chunks kept within +-RANGE of the car's chunk
 const GROUND_TILE = 6;                 // grass texture tile (m)
-const POST_GAP = 32;                   // white roadside posts, metres apart (wide enough to drive between)
 
 // ---- procedural road textures: albedo + normal + roughness, tiling along the road ---------------
 // 100 px/m: 1000 px across 10 m, 1200 px along 12 m. Value noise wraps vertically so it tiles.
@@ -75,7 +76,7 @@ function roadTextures(maxAniso) {
   }
   const tex = (data, srgb) => {
     const t = new THREE.DataTexture(data, W, H); t.flipY = false;
-    t.wrapS = THREE.ClampToEdgeWrapping; t.wrapT = THREE.RepeatWrapping; t.repeat.set(1, ROAD_LEN / PERIOD);
+    t.wrapS = THREE.ClampToEdgeWrapping; t.wrapT = THREE.RepeatWrapping;
     t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearMipmapLinearFilter; t.generateMipmaps = true; t.anisotropy = maxAniso;
     if (srgb) t.colorSpace = THREE.SRGBColorSpace;
     t.needsUpdate = true; return t;
@@ -92,21 +93,18 @@ function patch(x, z) {
 }
 
 // everything in one chunk, decided only by its grid index (i, j)
-function generateChunk(i, j) {
-  const rnd = rng(i * 7919 + j * 104729 + 13), trees = [], posts = [], poles = [];
+function generateChunk(i, j, track) {
+  const rnd = rng(i * 7919 + j * 104729 + 13), trees = [];
   const x0 = i * CH - CH / 2, z0 = j * CH - CH / 2;
   const dens = Math.max(0, patch(i * 0.45, j * 0.45) * 1.6 - 0.35);     // 0 = open field, ~1 = woods
   const n = Math.round(dens * 16 + rnd() * 2);
   for (let k = 0; k < n; k++) {
     const x = x0 + rnd() * CH, z = z0 + rnd() * CH;
-    if (Math.abs(x) < 11) continue;                                       // keep the verge clear
-    trees.push({ x, z, rot: rnd() * 6.283, s: 0.8 + rnd() * 0.9, v: (rnd() * VARIANTS) | 0 });
+    const t = { x, z, rot: rnd() * 6.283, s: 0.8 + rnd() * 0.9, v: (rnd() * VARIANTS) | 0 };
+    if (track.roadDist(x, z) < 11) continue;                              // keep the verge clear
+    trees.push(t);
   }
-  if (x0 <= 0 && x0 + CH > 0) {                                          // the chunk the road runs through
-    for (let z = Math.ceil(z0 / POST_GAP) * POST_GAP; z < z0 + CH; z += POST_GAP) posts.push(z);
-    for (let z = Math.ceil(z0 / 48) * 48; z < z0 + CH; z += 48) poles.push(z);
-  }
-  return { trees, posts, poles };
+  return { trees };
 }
 
 export function buildWorld(scene, renderer, assets) {
@@ -164,20 +162,46 @@ export function buildWorld(scene, renderer, assets) {
   // ---- the road ----
   const roadMat = new THREE.MeshStandardMaterial({ ...roadTextures(maxAniso), roughness: 1, metalness: 0, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
   roadMat.normalScale.set(1, 1);
-  const road = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_W, ROAD_LEN).rotateX(-Math.PI / 2), roadMat);
-  road.position.y = 0.01; road.receiveShadow = true; scene.add(road);
+  const track = makeTrack(1);
+  const rg = new THREE.BufferGeometry(), rPos = new Float32Array(ROWS * 6), rUv = new Float32Array(ROWS * 4), rIdx = [];
+  for (let r = 0; r < ROWS; r++) { rUv[r * 4] = 0; rUv[r * 4 + 2] = 1; }
+  for (let r = 0; r < ROWS - 1; r++) { const a = r * 2; rIdx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }   // counter-clockwise seen from above
+  rg.setIndex(rIdx);
+  rg.setAttribute('position', new THREE.BufferAttribute(rPos, 3));
+  rg.setAttribute('uv', new THREE.BufferAttribute(rUv, 2));
+  rg.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(ROWS * 6).map((_, k) => (k % 3 === 1 ? 1 : 0)), 3));
+  const road = new THREE.Mesh(rg, roadMat);
+  road.receiveShadow = true; road.frustumCulled = false; scene.add(road);
+  function layRoad(s0) {                                                // ribbon from s0 for ROWS samples; v counts dash periods
+    const sBase = Math.floor(s0 / PERIOD) * PERIOD;
+    for (let r = 0; r < ROWS; r++) {
+      const s = s0 + r * STEP, p = track.at(s), lx = Math.cos(p.h) * ROAD_W / 2, lz = -Math.sin(p.h) * ROAD_W / 2;
+      rPos.set([p.x - lx, 0.01, p.z - lz, p.x + lx, 0.01, p.z + lz], r * 6);
+      rUv[r * 4 + 1] = rUv[r * 4 + 3] = (s - sBase) / PERIOD;
+    }
+    rg.attributes.position.needsUpdate = true; rg.attributes.uv.needsUpdate = true;
+  }
 
   // ---- roadside furniture (instanced; filled from the chunks) ----
   const wood = new THREE.MeshStandardMaterial({ roughness: 0.9, color: 0x8a7458 });
   for (const k of ['map', 'normalMap', 'roughnessMap']) { wood[k] = assets.bark[k].clone(); wood[k].repeat.set(1, 6); wood[k].needsUpdate = true; }
-  const POSTS = 2 * (2 * RANGE + 1) * Math.ceil(CH / POST_GAP), POLES = (2 * RANGE + 1) * 2;
+  const POSTS = 80, POLES = 32, SIGNS = 64;
   const post = new THREE.InstancedMesh(new THREE.BoxGeometry(0.12, 0.95, 0.12).translate(0, 0.47, 0), new THREE.MeshStandardMaterial({ color: 0xe6e4dc, roughness: 0.55 }), POSTS);
   const refl = new THREE.InstancedMesh(new THREE.BoxGeometry(0.08, 0.14, 0.015), new THREE.MeshStandardMaterial({ color: 0xff2a10, emissive: 0x801000, roughness: 0.2, metalness: 0.3 }), POSTS);
   const pole = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.11, 0.15, 8.5, 10).translate(0, 4.25, 0), wood, POLES);
   const arm = new THREE.InstancedMesh(new THREE.BoxGeometry(1.9, 0.12, 0.12), wood, POLES);
   const wire = new THREE.MeshBasicMaterial({ color: 0x151515 });
-  const wires = [-0.8, 0, 0.8].map((dx) => { const w = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 2 * (RANGE + 0.5) * CH, 4).rotateX(Math.PI / 2), wire); w.position.set(-7 + dx, 8.05, 0); scene.add(w); return w; });
-  for (const m of [post, refl, pole, arm]) { m.count = 0; m.frustumCulled = false; m.castShadow = m !== refl; m.receiveShadow = true; scene.add(m); }
+  const wires = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.012, 0.012, 1, 4).translate(0, 0.5, 0), wire, POLES * 3);
+  // chevron boards on the outside of sharp bends: yellow arrows on black, pointing the way the road turns
+  const chevTex = (() => {
+    const c = document.createElement('canvas'); c.width = 128; c.height = 160; const g = c.getContext('2d');
+    g.fillStyle = '#111'; g.fillRect(0, 0, 128, 160); g.fillStyle = '#f2c414';
+    g.beginPath(); g.moveTo(84, 18); g.lineTo(28, 80); g.lineTo(84, 142); g.lineTo(106, 142); g.lineTo(50, 80); g.lineTo(106, 18); g.fill();
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+  })();
+  const board = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.6, 0.75).translate(0, 1.25, 0.05), new THREE.MeshStandardMaterial({ map: chevTex, roughness: 0.5, side: THREE.DoubleSide, emissive: 0x403000, emissiveMap: chevTex }), SIGNS);
+  const signPost = new THREE.InstancedMesh(new THREE.BoxGeometry(0.08, 1.62, 0.08).translate(0, 0.81, 0), new THREE.MeshStandardMaterial({ color: 0x8a8a86, roughness: 0.6, metalness: 0.5 }), SIGNS);
+  for (const m of [post, refl, pole, arm, wires, board, signPost]) { m.count = 0; m.frustumCulled = false; m.castShadow = m !== refl && m !== wires; m.receiveShadow = true; scene.add(m); }
   const trees = buildTrees(scene, assets);
 
   // ---- chunks: generate when they come in range, delete when they leave ----
@@ -190,28 +214,51 @@ export function buildWorld(scene, renderer, assets) {
     ci = i0; cj = j0;
     for (const key of chunks.keys()) { const [i, j] = key.split(',').map(Number); if (Math.abs(i - i0) > RANGE || Math.abs(j - j0) > RANGE) chunks.delete(key); }
     const allTrees = [];
-    let np = 0, nl = 0;
     for (let i = i0 - RANGE; i <= i0 + RANGE; i++) for (let j = j0 - RANGE; j <= j0 + RANGE; j++) {
       const key = i + ',' + j;
       let c = chunks.get(key);
-      if (!c) { c = generateChunk(i, j); chunks.set(key, c); }
+      if (!c) { c = generateChunk(i, j, track); chunks.set(key, c); }
       for (const t of c.trees) allTrees.push(t);
-      for (const pz of c.posts) for (const s of [-1, 1]) {
-        if (np >= POSTS) break;
-        post.setMatrixAt(np, m4.compose(p.set(s * 5.5, 0, pz), q.identity(), one));
-        refl.setMatrixAt(np++, m4.compose(p.set(s * 5.5, 0.78, pz + s * 0.065), q.identity(), one));
-      }
-      for (const pz of c.poles) if (nl < POLES) { pole.setMatrixAt(nl, m4.compose(p.set(-7, 0, pz), q.identity(), one)); arm.setMatrixAt(nl++, m4.compose(p.set(-7, 7.9, pz), q.identity(), one)); }
     }
-    post.count = refl.count = np; pole.count = arm.count = nl;
-    for (const m of [post, refl, pole, arm]) m.instanceMatrix.needsUpdate = true;
     trees.set(allTrees, x, z);
-    for (const w of wires) w.position.z = j0 * CH;
+  }
+  // road furniture along the stretch of road around the car
+  const UP = new THREE.Vector3(0, 1, 0), sc = new THREE.Vector3(), d3 = new THREE.Vector3(), qw = new THREE.Quaternion();
+  function furnish(s0, s1) {
+    let np = 0, nl = 0, ns = 0, nw = 0, prev = null;
+    for (const it of track.itemsInS(s0, s1)) {
+      q.setFromAxisAngle(UP, it.h);
+      if (it.kind === 'post' && np < POSTS) {
+        post.setMatrixAt(np, m4.compose(p.set(it.x, 0, it.z), q, one));
+        refl.setMatrixAt(np++, m4.compose(p.set(it.x + Math.sin(it.h) * it.side * 0.065, 0.78, it.z + Math.cos(it.h) * it.side * 0.065), q, one));
+      } else if (it.kind === 'pole' && nl < POLES) {
+        pole.setMatrixAt(nl, m4.compose(p.set(it.x, 0, it.z), q, one)); arm.setMatrixAt(nl++, m4.compose(p.set(it.x, 7.9, it.z), q, one));
+        if (prev) for (const dx of [-0.8, 0, 0.8]) {                     // three wires back to the previous pole
+          const ax = prev.x + Math.cos(prev.h) * dx, az = prev.z - Math.sin(prev.h) * dx, bx = it.x + Math.cos(it.h) * dx, bz = it.z - Math.sin(it.h) * dx;
+          d3.set(bx - ax, 0, bz - az); const len = d3.length(); d3.divideScalar(len);
+          wires.setMatrixAt(nw++, m4.compose(p.set(ax, 8.05, az), qw.setFromUnitVectors(UP, d3), sc.set(1, len, 1)));
+        }
+        prev = it;
+      } else if (it.kind === 'sign' && ns < SIGNS) {
+        signPost.setMatrixAt(ns, m4.compose(p.set(it.x, 0, it.z), q, one));
+        q.setFromAxisAngle(UP, it.h + Math.PI);                          // the board faces the oncoming car
+        board.setMatrixAt(ns++, m4.compose(p, q, sc.set(it.side > 0 ? -1 : 1, 1, 1)));   // arrows point into the bend
+      }
+    }
+    post.count = refl.count = np; pole.count = arm.count = nl; board.count = signPost.count = ns; wires.count = nw;
+    for (const m of [post, refl, pole, arm, wires, board, signPost]) m.instanceMatrix.needsUpdate = true;
   }
 
+  let hint, laidAt = -Infinity;
   function update(x, z, camera) {
+    const f = track.frame(x, z, hint); hint = f.i;
+    track.ensure(f.s + 1500);
+    if (Math.abs(f.s - laidAt) > 20) {
+      laidAt = f.s;
+      const s0 = Math.floor((f.s - BEHIND) / STEP) * STEP;
+      layRoad(s0); furnish(s0, s0 + BEHIND + AHEAD);
+    }
     ground.position.set(Math.round(x / GROUND_TILE) * GROUND_TILE, -0.04, Math.round(z / GROUND_TILE) * GROUND_TILE);
-    road.position.z = Math.round(z / PERIOD) * PERIOD;
     followSun(x, z);
     refresh(x, z);
     if (camera) trees.update(camera, SUN_DIR);
@@ -222,11 +269,11 @@ export function buildWorld(scene, renderer, assets) {
     for (let i = i0 - 1; i <= i0 + 1; i++) for (let j = j0 - 1; j <= j0 + 1; j++) {
       const c = chunks.get(i + ',' + j); if (!c) continue;
       for (const t of c.trees) if (Math.hypot(t.x - x, t.z - z) < r + 0.36 * t.s) return 'tree';
-      for (const pz of c.posts) if (Math.abs(pz - z) < r + 0.06 && Math.abs(Math.abs(x) - 5.5) < r + 0.06) return 'post';
-      for (const pz of c.poles) if (Math.hypot(-7 - x, pz - z) < r + 0.15) return 'pole';
     }
+    const size = { post: 0.08, pole: 0.15, sign: 0.06 };
+    for (const it of track.itemsNear(x, z, r + 0.5)) if (size[it.kind] && Math.hypot(it.x - x, it.z - z) < r + size[it.kind]) return it.kind;
     return null;
   }
   update(0, 0);
-  return { update, chunks, obstacleAt };
+  return { update, chunks, obstacleAt, track };
 }
