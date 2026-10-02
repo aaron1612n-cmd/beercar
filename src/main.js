@@ -343,7 +343,8 @@ addEventListener('keydown', (e) => {
   if (e.altKey && e.code === 'KeyF') e.preventDefault();          // don't open the browser menu
   if (e.altKey && e.code === 'Digit4' && keys.has('KeyF')) { e.preventDefault(); summonGod(); }   // Alt+F+4: God on demand
   if (e.code === 'KeyC') camMode = (camMode + 1) % 2;
-  if (e.code === 'KeyG') setTimeScale(timeScale >= 8 ? 1 : timeScale * 2);
+  if (e.code === 'KeyG') { S.auto = !S.auto; say(S.auto ? 'Autopilot ON: it drives, you drink (W A S D takes over)' : 'Autopilot off', 2); }
+  if (e.code === 'KeyT') setTimeScale(timeScale >= 8 ? 1 : timeScale * 2);
   if (e.code === 'KeyR') { endRun(); resetState(); }
   if (e.code === 'KeyH') $('hints').classList.toggle('faded');
   if (e.code === 'KeyM') { muted = !muted; if (master) master.gain.value = muted ? 0 : 1; }
@@ -430,6 +431,22 @@ function gearbox(dt, vf, throttle) {
   car.shifter.set(a[0] + (b[0] - a[0]) * smooth01((u - 0.35) / 0.25), a[1] * (1 - smooth01(u / 0.35)) + b[1] * smooth01((u - 0.6) / 0.4));
 }
 
+// G: the car drives itself (sober, whatever you've had): holds the lane 1.7 m left of the centre by aiming
+// at a point on it a little way ahead, and slows for the tightest bend coming up. Touch W/A/S/D to take over.
+function autopilot(f, vf) {
+  // Stanley lane-keeping (the classic self-driving-car controller): the bend's own steering angle, minus the
+  // heading error, plus the lane offset scaled down with speed
+  const tr = world.track, v = Math.abs(vf), sF = f.s + 1.4;                 // measured at the front axle
+  const kRoad = (tr.at(sF + v * 0.15 + 2).h - tr.at(sF + v * 0.15 - 2).h) / 4;   // signed curvature, + = bends left
+  const front = tr.at(sF), psi = angDiff(S.th, front.h);
+  const delta = Math.atan(T.wheelbase * kRoad) - psi + Math.atan((1.5 * (1.7 - f.lat)) / (v + 1));
+  const steer = clamp(delta / (T.steerMax / (1 + v * T.steerFalloff)), -1, 1);
+  let k = 0;                                                                // sharpest curvature (1/radius) in the next few seconds
+  for (let d = 0; d < 30 + v * 3; d += 4) k = Math.max(k, Math.abs(tr.at(f.s + d + 4).h - tr.at(f.s + d).h) / 4);
+  const vWant = Math.min(T.maxFwd * 0.9, Math.sqrt((T.latG * 0.7) / Math.max(k, 1e-4)));
+  return [clamp((vWant - vf) * 0.5, -1, 1), steer];
+}
+
 function step(dt) {
   if (S.crashT > 0) { if ((S.crashT -= dt) <= 0) respawn(); return 0; }
   let throttle = (down('KeyW', 'ArrowUp') ? 1 : 0) - (down('KeyS', 'ArrowDown') ? 1 : 0);
@@ -439,14 +456,16 @@ function step(dt) {
   // where the car is on the road: s along it, lat metres left of the centre
   const f = world.track.frame(S.x, S.z, S.ri);
   S.ri = f.i; S.s = f.s; S.lat = f.lat;
-  if (S.invT > 0) steerIn = -steerIn;                                       // which way is left?
-  if (S.drunk > 0.05) steerIn = clamp(steerIn + Math.min(0.7, S.drunk * 0.22) * Math.sin(clock * 0.6 + Math.sin(clock * 0.23) * 3), -1, 1);
+  if (S.auto && (throttle || steerIn)) { S.auto = false; say('You have control', 1.5); }
+  if (S.auto) [throttle, steerIn] = autopilot(f, vf);
+  if (S.invT > 0 && !S.auto) steerIn = -steerIn;                            // which way is left?
+  if (S.drunk > 0.05 && !S.auto) steerIn = clamp(steerIn + Math.min(0.7, S.drunk * 0.22) * Math.sin(clock * 0.6 + Math.sin(clock * 0.23) * 3), -1, 1);
 
   // drift (arcade): the handbrake, or stamping on the brake into a bend, lets the back end go; it then
   // holds for as long as you stay on the gas and keep steering, and tidies itself up when you stop
   let dWant = 0;
   if (handbrake && Math.abs(vf) > 6) dWant = 1;
-  else if (throttle < 0 && vf > 12 && Math.abs(steerIn) > 0.5) dWant = 0.8;
+  else if (!S.auto && throttle < 0 && vf > 12 && Math.abs(steerIn) > 0.5) dWant = 0.8;
   else if (S.drift > 0.15 && throttle > 0 && steerIn && Math.abs(vf) > 6) dWant = 0.7;
   const drift0 = S.drift;
   S.drift += (dWant - S.drift) * Math.min(1, (dWant > S.drift ? 6 : 1.8) * dt);

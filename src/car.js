@@ -4,7 +4,7 @@
 // Origin = ground under the middle of the car, +Z = forward, +X = the driver's LEFT. `cabin` is the frame
 // the driver is authored in (hips, wheel, anchors); it is offset into the Camaro's left-hand seat.
 import * as THREE from 'three';
-import { Kit, T, M, rbox, cyl, lathe, tube, kitMaterial } from './kit.js';
+import { rbox } from './kit.js';
 
 export { rbox };
 export function canvasTex(w, h, draw) {
@@ -14,12 +14,6 @@ export function canvasTex(w, h, draw) {
   return t;
 }
 
-const C = { red: 0xa6191c, cream: 0xe9dfc4, black: 0x151617, chrome: 0xe9ebec, steel: 0x6d7074, rubber: 0x1b1b1b, vinyl: 0x2a1a12, lensW: 0xfff1d0, lensR: 0xc01010, wall: 0xe8e6de };
-const paint = (color = C.red, extra = {}) => ({ color, rough: 0.35, metal: 0.25, coat: 1, type: T.PAINT, ...extra });
-const chrome = { color: C.chrome, rough: 0.08, metal: 1, type: T.CHROME };
-const blackPlain = { color: C.black, rough: 0.6, metal: 0.2, type: T.PLAIN };
-const steel = { color: C.steel, rough: 0.45, metal: 0.8, type: T.STEEL };
-const vinyl = { color: C.vinyl, rough: 0.55, type: T.VINYL };
 
 const S = 100;                        // the glb's nodes carry a 0.01 scale; undo it so 1 unit = 1 m
 const CORNERS = [[0.78, 1.415], [-0.78, 1.415], [0.78, -1.345], [-0.78, -1.345]];   // wheel centres (x, z); y = WR
@@ -31,12 +25,40 @@ const CAB = new THREE.Vector3(0.385, -0.56, 0.21);
 // The model's own steering wheel (ring fitted to the Interior mesh): centre, face normal, rim radius.
 const WHEEL_C = new THREE.Vector3(0.385, 0.791, 0.198), WHEEL_TILT = -1.282, RIM_R = 0.191;
 
+// Move every triangle of `mesh` that lies within the rim (+3.5 cm) and from 13 cm behind to 6 cm in front of
+// the wheel's plane (rim, spokes, the dished SS hub; the column is deeper and stays) into a new mesh in
+// `spinner`'s frame; the rest of the mesh keeps the others.
+function cutWheel(mesh, spinner, body) {
+  body.updateMatrixWorld(true);
+  const toSpin = spinner.matrixWorld.clone().invert().multiply(mesh.matrixWorld), nrm = new THREE.Matrix3().getNormalMatrix(toSpin);
+  const g = mesh.geometry, pos = g.attributes.position, n = pos.count;
+  const idx = g.index ? Array.from(g.index.array) : Array.from({ length: n }, (_, i) => i);
+  const p = new THREE.Vector3(), inside = new Uint8Array(n);
+  for (let i = 0; i < n; i++) { p.fromBufferAttribute(pos, i).applyMatrix4(toSpin); inside[i] = Math.hypot(p.x, p.z) < RIM_R + 0.035 && p.y > -0.13 && p.y < 0.06 ? 1 : 0; }
+  const keep = [], cut = [];
+  for (let t = 0; t < idx.length; t += 3) (inside[idx[t]] && inside[idx[t + 1]] && inside[idx[t + 2]] ? cut : keep).push(idx[t], idx[t + 1], idx[t + 2]);
+  g.setIndex(keep);
+  const wg = new THREE.BufferGeometry(), out = {};
+  for (const [name, attr] of Object.entries(g.attributes)) {
+    const a = new Float32Array(cut.length * attr.itemSize);
+    cut.forEach((v, k) => { for (let c = 0; c < attr.itemSize; c++) a[k * attr.itemSize + c] = attr.getComponent(v, c); });
+    out[name] = new THREE.BufferAttribute(a, attr.itemSize);
+  }
+  wg.setAttribute('position', out.position.applyMatrix4(toSpin));
+  if (out.normal) wg.setAttribute('normal', out.normal.applyNormalMatrix(nrm));
+  for (const k of Object.keys(out)) if (k !== 'position' && k !== 'normal') wg.setAttribute(k, out[k]);
+  // the model's interior material is transparent with depthWrite off: as a separate mesh the wheel would be
+  // sorted under the rest of the interior and vanish, so it gets an opaque copy
+  const m = mesh.material.clone(); m.transparent = false; m.depthWrite = true;
+  const w = new THREE.Mesh(wg, m); w.castShadow = w.receiveShadow = true; w.name = 'SteeringWheel';
+  return w;
+}
+
 export function buildCar(gltf) {
   const root = new THREE.Group();          // world position + heading
   const body = new THREE.Group();          // pitch/roll + wobble
   root.add(body);
   const cabin = new THREE.Group(); cabin.position.copy(CAB); body.add(cabin);   // driver-frame (tractor-era coordinates)
-  const mat = kitMaterial(); mat.side = THREE.DoubleSide;
 
   // ---- the Camaro ----
   const model = gltf.scene; model.scale.setScalar(S); model.position.y = 0.02; body.add(model);
@@ -70,25 +92,23 @@ export function buildCar(gltf) {
   const cigarBox = w2c(0.7, 0.62, -0.1);
   const feet = { x: 0.17, ankle: w2c(0, 0.31, 0.42), toe: w2c(0, 0.36, 0.6) };
 
-  // ---- steering: column (static) + wheel (spins) ----
-  const wheelGroup = new THREE.Group(); wheelGroup.position.copy(WHEEL_C).sub(CAB); wheelGroup.rotation.x = WHEEL_TILT;   // sits on the model's wheel and covers it cabin.add(wheelGroup);
-  const kc = new Kit(); kc.add(cyl(0.022, 0.03, 0.42, 12), { m: M(0, -0.21, 0), ...blackPlain });
-  kc.add(cyl(0.036, 0.04, 0.05, 16), { m: M(0, -0.045, 0), ...blackPlain });
-  wheelGroup.add(kc.build(mat));
+  // ---- steering: the wheel frame (spinner +Y faces the driver, the rim lies in its XZ plane) ----
+  const wheelGroup = new THREE.Group(); wheelGroup.position.copy(WHEEL_C).sub(CAB); wheelGroup.rotation.x = WHEEL_TILT;
+  cabin.add(wheelGroup);
   const spinner = new THREE.Group(); wheelGroup.add(spinner);
-  const RIM = RIM_R, ks = new Kit();
-  ks.add(new THREE.TorusGeometry(RIM, 0.02, 12, 48), { m: M(0, 0, 0, Math.PI / 2, 0, 0), color: 0x151515, rough: 0.5, type: T.VINYL });
-  for (const a of [Math.PI / 2, Math.PI * 7 / 6, Math.PI * 11 / 6]) ks.add(rbox(0.024, 0.01, RIM, 0.004), { m: M(Math.cos(a) * RIM / 2, 0, Math.sin(a) * RIM / 2, 0, -a + Math.PI / 2, 0), ...steel });
-  ks.add(lathe([[0.05, -0.01], [0.05, 0.012], [0.04, 0.022], [0.02, 0.027], [0, 0.028]], 32), blackPlain);
-  ks.add(cyl(0.022, 0.022, 0.004, 24), { m: M(0, 0.029, 0), ...chrome });
-  spinner.add(ks.build(mat));
+  const RIM = RIM_R;
+  // The Camaro's own steering wheel is baked into its Interior mesh. Cut those triangles (inside the rim,
+  // close to the wheel's plane) out into a mesh of their own on the spinner, so the real wheel turns.
+  let interior = null;
+  model.traverse((o) => { if (o.isMesh && /Interior/.test(o.name)) interior = o; });
+  if (interior) spinner.add(cutWheel(interior, spinner, body));
 
   // ---- floor shifter on the console, ahead of the cupholder: pivots at the boot; set(gx, gz) tilts it
   // into a gate (gx +1 = toward the driver, gz +1 = forward). `knob` is what the right hand grabs.
   const shifter = new THREE.Group(); shifter.position.set(0, 0.5, 0.1); body.add(shifter);
   const rubber = new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.9 });
   const boot = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.045, 0.06, 16).translate(0, 0.03, 0), rubber); body.add(boot); boot.position.copy(shifter.position);
-  const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.012, 0.2, 10).translate(0, 0.1, 0), new THREE.MeshStandardMaterial({ color: C.chrome, roughness: 0.12, metalness: 1 }));
+  const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.009, 0.012, 0.2, 10).translate(0, 0.1, 0), new THREE.MeshStandardMaterial({ color: 0xe9ebec, roughness: 0.12, metalness: 1 }));
   const knob = new THREE.Mesh(new THREE.SphereGeometry(0.026, 20, 14), new THREE.MeshStandardMaterial({ color: 0x0c0c0c, roughness: 0.25 }));
   knob.position.y = 0.21; knob.userData.r = 0.026;
   for (const m of [boot, stick, knob]) m.castShadow = true;
