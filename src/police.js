@@ -130,7 +130,7 @@ export function buildPolice(scene, assets, world, hooks = {}) {
       // wide and wreck; 2 m/s on your bumper so they stay on the road to ram);
       // within 60 m they line up on your lane, and inside 20 m they swerve hard into you to ram
       const a = P.bustT > 0 ? { throttle: speedOf(c.v) > 0.5 ? -1 : 0, steer: 0, handbrake: false }   // got you: pull up
-        : autopilot(tr, c.v, f, TC, dt, { mode: 'normal', lane: dist < 60 ? P.lat : 1.7, top: 1, boost: gap > 25 ? 6 : gap > -2 ? 2 : 0, laneK: dist < 20 ? 6 : 1.5 });
+        : autopilot(tr, c.v, f, TC, { lane: dist < 60 ? P.lat : 1.7, top: 1, boost: gap > 25 ? 6 : gap > -2 ? 2 : 0, laneK: dist < 20 ? 6 : 1.5 });
       const r = drive(c.v, { ...a, power: 1, brakeDrift: false }, dt, TC);
       // trees / posts / poles: wreck above 10 mph, bounce off below
       const nx = Math.sin(c.v.th), nz = Math.cos(c.v.th);

@@ -15,9 +15,8 @@ Drive a '67 Camaro down an endless winding road. Chug beer, smoke cigars, don't 
 | ` | drink beer |
 | Q | smoke cigar |
 | G | autopilot on / off |
-| T | autopilot mode: Normal (tidy) / Drift (flat out, sideways) |
 | F | game speed 1x / 2x / 4x / 8x |
-| C | camera |
+| C | camera (chase cam: the mouse looks all the way round) |
 | R | reset |
 | M | mute |
 | H | help |

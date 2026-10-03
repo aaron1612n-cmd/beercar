@@ -344,7 +344,6 @@ function resetState() {
   $('msg').style.opacity = 0;
 }
 resetState();
-S.autoMode = 'normal';                                                      // T: 'normal' | 'drift' (kept across R resets, like S.auto)
 
 // ---- the goal: miles down the road without crashing; best run kept in the browser ----
 // (v2: v1 bests were set on the old straight road)
@@ -392,8 +391,7 @@ addEventListener('keydown', (e) => {
   if (e.altKey && e.code === 'KeyF') e.preventDefault();          // don't open the browser menu
   if (e.altKey && e.code === 'Digit4' && keys.has('KeyF')) { e.preventDefault(); summonGod(); }   // Alt+F+4: God on demand
   if (e.code === 'KeyC') { camMode = (camMode + 1) % 2; if (camMode === 0) S.yaw = clamp(S.yaw, -2.0, 2.0); }
-  if (e.code === 'KeyG') { S.auto = !S.auto; say(S.auto ? `Autopilot ON (${S.autoMode}): it drives, you drink (W A S D takes over)` : 'Autopilot off', 2); }
-  if (e.code === 'KeyT') { S.autoMode = S.autoMode === 'drift' ? 'normal' : 'drift'; say(`Autopilot mode: ${S.autoMode === 'drift' ? 'DRIFT (flat out, sideways)' : 'Normal'}${S.auto ? '' : ' (press G)'}`, 2); }
+  if (e.code === 'KeyG') { S.auto = !S.auto; say(S.auto ? 'Autopilot ON: it drives, you drink (W A S D takes over)' : 'Autopilot off', 2); }
   if (e.code === 'KeyF' && !e.altKey) setTimeScale(timeScale >= 8 ? 1 : timeScale * 2);
   if (e.code === 'KeyR') { endRun(); resetState(); chase.reset(); police.setCount(0, S); $('msg').classList.remove('big'); }
   if (e.code === 'KeyH') $('hints').classList.toggle('faded');
@@ -484,8 +482,8 @@ function gearbox(dt, vf, throttle) {
   car.shifter.set(a[0] + (b[0] - a[0]) * smooth01((u - 0.35) / 0.25), a[1] * (1 - smooth01(u / 0.35)) + b[1] * smooth01((u - 0.6) / 0.4));
 }
 
-// G: the car drives itself (sober, whatever you've had); T picks Normal (tidy) or Drift (flat out, sideways).
-// Both line up with any hitchhiker still standing in the next 150 m. Touch W/A/S/D to take over.
+// G: the car drives itself (sober, whatever you've had), lining up with any hitchhiker still standing in the
+// next 150 m (autopilot.js). Touch W/A/S/D to take over.
 
 function step(dt) {
   if (S.crashT > 0) { if ((S.crashT -= dt) <= 0) respawn(); return 0; }
@@ -496,24 +494,19 @@ function step(dt) {
   }
   let throttle = (down('KeyW', 'ArrowUp') ? 1 : 0) - (down('KeyS', 'ArrowDown') ? 1 : 0);
   let steerIn = (down('KeyA', 'ArrowLeft') ? 1 : 0) - (down('KeyD', 'ArrowRight') ? 1 : 0);
-  let handbrake = down('Space');                                            // locks the rears
+  const handbrake = down('Space');                                          // locks the rears
   let vf = S.vx * Math.sin(S.th) + S.vz * Math.cos(S.th);                   // forward speed coming into this step
   // where the car is on the road: s along it, lat metres left of the centre
   const f = world.track.frame(S.x, S.z, S.ri);
   S.ri = f.i; S.s = f.s; S.lat = f.lat;
   if (S.auto && (throttle || steerIn)) { S.auto = false; say('You have control', 1.5); }
-  let slide = 0;                                                            // Drift autopilot's clutch kick (vehicle.js)
-  if (S.auto) {
-    let apHB;
-    ({ throttle, steer: steerIn, handbrake: apHB, slide = 0 } = autopilot(world.track, S, f, T, dt, { mode: S.autoMode, lane: huntLane(world.track, f.s) }));
-    handbrake = handbrake || apHB;
-  }
+  if (S.auto) ({ throttle, steer: steerIn } = autopilot(world.track, S, f, T, { lane: huntLane(world.track, f.s) }));
   if (S.invT > 0 && !S.auto) steerIn = -steerIn;                            // which way is left?
   if (S.drunk > 0.05 && !S.auto) steerIn = clamp(steerIn + Math.min(0.7, S.drunk * 0.22) * Math.sin(clock * 0.6 + Math.sin(clock * 0.23) * 3), -1, 1);
 
   // the car itself (vehicle.js): drift, steering, power, grip; no drive while a gear goes in
   const power = S.shiftT > 0 && S.gear > S.shiftFrom ? 0 : 1;
-  const r = drive(S, { throttle, steer: steerIn, handbrake, power, brakeDrift: !S.auto, slide }, dt, T);
+  const r = drive(S, { throttle, steer: steerIn, handbrake, power, brakeDrift: !S.auto }, dt, T);
   if (r.drift0 < 0.4 && S.drift >= 0.4) SFX.chirp(1);
   vf = r.vf;
   const vf0 = r.vf0, slip = r.slip, nx = Math.sin(S.th), nz = Math.cos(S.th);

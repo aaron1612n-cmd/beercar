@@ -10,17 +10,15 @@ export const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 export const angDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 
 // v = { x, z, th, vx, vz, steer, yawRate, drift }; inp = { throttle -1..1, steer -1..1 (+ = left), handbrake,
-// power 0..1 (0 while a gear goes in), brakeDrift (stamping on the brake into a bend starts a slide),
-// slide (0, or how hard to kick the tail: breaks the rears loose like the handbrake but without braking,
-// a clutch kick, for the Drift autopilot) }.
+// power 0..1 (0 while a gear goes in), brakeDrift (stamping on the brake into a bend starts a slide) }.
 // Returns forward speed after (vf) and before (vf0) the longitudinal forces, the slip angle, and the drift
 // amount coming in (drift0) so the caller can play a chirp when a slide starts.
-export function drive(v, { throttle, steer: steerIn, handbrake, power = 1, brakeDrift = true, slide = 0 }, dt, T) {
+export function drive(v, { throttle, steer: steerIn, handbrake, power = 1, brakeDrift = true }, dt, T) {
   let vf = v.vx * Math.sin(v.th) + v.vz * Math.cos(v.th);
   // drift (arcade): the handbrake, or stamping on the brake into a bend, lets the back end go; it then
   // holds for as long as you stay on the gas and keep steering, and tidies itself up when you stop
   let dWant = 0;
-  if ((handbrake || slide) && Math.abs(vf) > 6) dWant = 1;
+  if (handbrake && Math.abs(vf) > 6) dWant = 1;
   else if (brakeDrift && throttle < 0 && vf > 12 && Math.abs(steerIn) > 0.5) dWant = 0.8;
   else if (v.drift > 0.15 && throttle > 0 && steerIn && Math.abs(vf) > 6) dWant = 0.7;
   const drift0 = v.drift;
@@ -31,7 +29,7 @@ export function drive(v, { throttle, steer: steerIn, handbrake, power = 1, brake
   const want = steerIn * lock, dSt = T.steerRate * dt;
   v.steer += clamp(want - v.steer, -dSt, dSt);
   if (!steerIn) v.steer *= Math.exp(-5 * dt);
-  const kick = (handbrake ? 1.3 : slide) * steerIn * Math.sign(vf);         // a yanked handbrake (or a clutch kick) swings the tail
+  const kick = handbrake ? steerIn * 1.3 * Math.sign(vf) : 0;               // a yanked handbrake swings the tail
   const kin = ((vf * Math.tan(v.steer)) / T.wheelbase) * (1 + 1.7 * v.drift) + kick;
   const cap = (T.latG * (1 + 2.2 * v.drift)) / Math.max(1, Math.abs(vf)) + Math.abs(kick);
   v.yawRate = (v.yawRate || 0) + (clamp(kin, -cap, cap) - (v.yawRate || 0)) * Math.min(1, T.yawResp * dt);
