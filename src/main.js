@@ -391,7 +391,7 @@ addEventListener('keydown', (e) => {
   if (e.code === 'Escape') { showMenu(); return; }
   if (e.altKey && e.code === 'KeyF') e.preventDefault();          // don't open the browser menu
   if (e.altKey && e.code === 'Digit4' && keys.has('KeyF')) { e.preventDefault(); summonGod(); }   // Alt+F+4: God on demand
-  if (e.code === 'KeyC') camMode = (camMode + 1) % 2;
+  if (e.code === 'KeyC') { camMode = (camMode + 1) % 2; if (camMode === 0) S.yaw = clamp(S.yaw, -2.0, 2.0); }
   if (e.code === 'KeyG') { S.auto = !S.auto; say(S.auto ? `Autopilot ON (${S.autoMode}): it drives, you drink (W A S D takes over)` : 'Autopilot off', 2); }
   if (e.code === 'KeyT') { S.autoMode = S.autoMode === 'drift' ? 'normal' : 'drift'; say(`Autopilot mode: ${S.autoMode === 'drift' ? 'DRIFT (flat out, sideways)' : 'Normal'}${S.auto ? '' : ' (press G)'}`, 2); }
   if (e.code === 'KeyF' && !e.altKey) setTimeScale(timeScale >= 8 ? 1 : timeScale * 2);
@@ -409,7 +409,8 @@ $('playYou').addEventListener('click', () => startGame());
 canvas.addEventListener('click', () => { if (document.pointerLockElement !== canvas) lockMouse(); });
 addEventListener('mousemove', (e) => {
   if (document.pointerLockElement !== canvas) return;
-  S.yaw = Math.max(-2.0, Math.min(2.0, S.yaw - e.movementX * T.sens));
+  // chase cam: all the way round the car; first person: as far as the driver's neck turns
+  S.yaw = camMode === 1 ? angDiff(S.yaw - e.movementX * T.sens, 0) : clamp(S.yaw - e.movementX * T.sens, -2.0, 2.0);
   S.look = Math.max(-1.15, Math.min(0.85, S.look - e.movementY * T.sens));
 });
 document.addEventListener('pointerlockchange', () => { $('lookHint').style.display = document.pointerLockElement === canvas || overlayUp() ? 'none' : 'block'; });
@@ -501,9 +502,10 @@ function step(dt) {
   const f = world.track.frame(S.x, S.z, S.ri);
   S.ri = f.i; S.s = f.s; S.lat = f.lat;
   if (S.auto && (throttle || steerIn)) { S.auto = false; say('You have control', 1.5); }
+  let slide = 0;                                                            // Drift autopilot's clutch kick (vehicle.js)
   if (S.auto) {
     let apHB;
-    ({ throttle, steer: steerIn, handbrake: apHB } = autopilot(world.track, S, f, T, dt, { mode: S.autoMode, lane: huntLane(world.track, f.s) }));
+    ({ throttle, steer: steerIn, handbrake: apHB, slide = 0 } = autopilot(world.track, S, f, T, dt, { mode: S.autoMode, lane: huntLane(world.track, f.s) }));
     handbrake = handbrake || apHB;
   }
   if (S.invT > 0 && !S.auto) steerIn = -steerIn;                            // which way is left?
@@ -511,7 +513,7 @@ function step(dt) {
 
   // the car itself (vehicle.js): drift, steering, power, grip; no drive while a gear goes in
   const power = S.shiftT > 0 && S.gear > S.shiftFrom ? 0 : 1;
-  const r = drive(S, { throttle, steer: steerIn, handbrake, power, brakeDrift: !S.auto }, dt, T);
+  const r = drive(S, { throttle, steer: steerIn, handbrake, power, brakeDrift: !S.auto, slide }, dt, T);
   if (r.drift0 < 0.4 && S.drift >= 0.4) SFX.chirp(1);
   vf = r.vf;
   const vf0 = r.vf0, slip = r.slip, nx = Math.sin(S.th), nz = Math.cos(S.th);
@@ -581,7 +583,7 @@ function updateCamera(dt, vf) {
     S.camTh += angDiff(S.th, S.camTh) * Math.min(1, T.camLag * dt);
     const a = S.camTh + S.yaw, cx = Math.sin(a), cz = Math.cos(a);
     tmp.set(S.x - cx * T.camDist, T.camHeight - S.look * 2, S.z - cz * T.camDist);
-    look.set(S.x + Math.sin(S.camTh) * 3, 1.0, S.z + Math.cos(S.camTh) * 3);
+    look.set(S.x + cx * 3, 1.0, S.z + cz * 3);                             // past the car the way the camera faces
     camera.position.lerp(tmp, Math.min(1, 10 * dt));
     camera.up.set(0, 1, 0); camera.lookAt(look);
     const fov = 60 + Math.abs(vf) * 0.5;
@@ -638,7 +640,7 @@ function tick(now) {
 }
 function sim(dt) {
   const vf = overlayUp() ? 0 : step(dt);
-  driver.update(dt, { steerAngle: S.steer * 3.2, yaw: S.yaw, pitch: S.look, firstPerson: camMode === 0,
+  driver.update(dt, { steerAngle: S.steer * 3.2, yaw: clamp(S.yaw, -2.0, 2.0), pitch: S.look, firstPerson: camMode === 0,
     deck: { on: false }, jolt: S.jolt || 0 });
   if (driver.cigarLit && (S.wisp = (S.wisp ?? 0) - dt) <= 0) {
     S.wisp = 0.3;

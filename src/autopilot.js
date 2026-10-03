@@ -2,13 +2,13 @@
 // lane-keeping (the classic self-driving-car controller: the bend's own steering angle, minus the heading
 // error, plus the lane offset scaled down with speed) and both slow for the tightest bend coming up.
 //   normal: sober and tidy, 0.7 g in bends, 90% of top speed
-//   drift:  flat out, full grip in bends, flicks the handbrake into sharp ones and holds the slide with
-//           the gas, pointing the nose into the bend by DRIFT.slip
+//   drift:  flat out, kicks the rears loose through bends (vehicle.js `slide`: like the handbrake but
+//           without braking, so it slides at speed) and holds the slide with the gas
 // Cops use 'normal' with top = 1 and a catch-up boost.
 import { clamp, angDiff } from './vehicle.js';
 
-// tuned with tools/drivecheck.mjs: 0 crashes on 5 seeds x 3 km, slides peak at 32-36 deg (Normal: 4)
-export const DRIFT = { gripUse: 0.85, entryK: 1 / 60, minV: 10, hold: 0.95, kHead: 1.6, minGas: 0.6, verge: 1.5, outside: 0.5 };
+// tuned with tools/drivecheck.mjs: 0 crashes on 5 seeds x 3 km, slides peak ~39 deg (Normal: 4) at ~45 mph
+export const DRIFT = { gripUse: 0.85, entryK: 1 / 60, minV: 10, hold: 1.01, kHead: 1.6, minGas: 0.6, verge: 1.5, outside: 0.5, kick: 1.3 };
 
 // lane to hold: line up with the next hitchhiker still standing in the next 150 m, else 1.7 m left of centre
 export function huntLane(track, s) {
@@ -49,8 +49,8 @@ export function autopilot(tr, v, f, T, dt, { mode = 'normal', lane = 1.7, boost 
   let throttle = clamp((vWant - vf) * 0.5, -1, 1);
   const out = (lane - f.lat) * Math.sign(kRoad);                           // metres toward the outside of the bend
   const wide = Math.abs(f.lat - lane) > D.verge || out > D.outside;        // sliding off line: let it grip again
-  const handbrake = inBend && !wide && vf > D.minV && v.drift < D.hold;
+  const slide = inBend && !wide && vf > D.minV && v.drift < D.hold ? D.kick : 0;
   if (inBend && v.drift > 0.15 && !wide) throttle = Math.max(D.minGas, throttle);   // the gas keeps the slide going
   if (!inBend && v.drift > 0.15) throttle = Math.min(throttle, 0);       // bend's done: lift so the slide dies
-  return { throttle, steer, handbrake };
+  return { throttle, steer, handbrake: false, slide };
 }
