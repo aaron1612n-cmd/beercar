@@ -9,11 +9,10 @@ import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
-
-// ---- tuning: top speed ~90 mph. Turning is limited by tyre grip (latG), not just the steering lock,
-// so it's quick in town and calm on the highway; the heading follows with a little yaw inertia. --------
-const T = { maxFwd: 40, maxRev: 8, accel: 7, brake: 16, coast: 1.4, drag: 0.0012, steerMax: 0.55, steerRate: 1.8, steerFalloff: 0.035,
-  wheelbase: 2.76, grip: 14, latG: 8.5, yawResp: 7, fov: 72, sens: 0.0022, camDist: 7.5, camHeight: 2.8, camLag: 4 };
+import { T, clamp, angDiff, drive } from './vehicle.js';   // T = car tuning (top speed, grip, steering)
+import { autopilot, huntLane } from './autopilot.js';
+import { makeChase } from './chase.js';
+import { buildPolice } from './police.js';
 
 // ---- scene ------------------------------------------------------------------
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -80,7 +79,7 @@ const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(
 function say(text, secs = 2.2) { const m = $('msg'); m.textContent = text; m.style.opacity = 1; S.msgT = secs; }
 
 // ---- audio ------------------------------------------------------------------
-let actx, master, engA, engB, engG, bladeG, noiseBuf, squealG, squealBP, squealOsc, muted = false;
+let actx, master, engA, engB, engG, bladeG, noiseBuf, squealG, squealBP, squealOsc, heliG, sirens = [], muted = false;
 function startAudio() {
   try {
     actx = new AudioContext(); master = actx.createGain(); master.connect(actx.destination);
@@ -105,6 +104,24 @@ function startAudio() {
     sn.connect(squealBP).connect(snG).connect(squealG); sn.start();
     squealOsc = actx.createOscillator(); squealOsc.type = 'triangle'; squealOsc.frequency.value = 1850;
     const soG = actx.createGain(); soG.gain.value = 0.12; squealOsc.connect(soG).connect(squealG); squealOsc.start();
+    // sirens: one wailing oscillator per cop car (silent until that car's out)
+    sirens = [0, 1, 2].map(() => {
+      const o = actx.createOscillator(); o.type = 'sawtooth';
+      const bp = actx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1100; bp.Q.value = 1.2;
+      const g = actx.createGain(); g.gain.value = 0;
+      o.connect(bp).connect(g).connect(master); o.start();
+      return { o, g };
+    });
+    // helicopter: low noise chopped at ~18 Hz (the rotor thump) plus a faint turbine whine
+    heliG = actx.createGain(); heliG.gain.value = 0; heliG.connect(master);
+    const hn = actx.createBufferSource(); hn.buffer = noiseBuf; hn.loop = true;
+    const hlp = actx.createBiquadFilter(); hlp.type = 'lowpass'; hlp.frequency.value = 260;
+    const chop = actx.createGain(); chop.gain.value = 0.5;
+    const lfo = actx.createOscillator(); lfo.frequency.value = 18; const lfoG = actx.createGain(); lfoG.gain.value = 0.5;
+    lfo.connect(lfoG).connect(chop.gain); lfo.start();
+    hn.connect(hlp).connect(chop).connect(heliG); hn.start();
+    const whine = actx.createOscillator(); whine.frequency.value = 2400; const wG = actx.createGain(); wG.gain.value = 0.04;
+    whine.connect(wG).connect(heliG); whine.start();
   } catch { actx = null; }
 }
 // one-shot filtered noise burst
@@ -166,6 +183,21 @@ const SFX = {
   gear: () => { tone(150, 95, 0.14, 0.09); burst('lowpass', 500, 0.12, 0.08, 2); setTimeout(() => tone(230, 170, 0.06, 0.05), 70); },
   boom: () => { burst('lowpass', 160, 0.9, 1.8, 0.7); tone(80, 28, 0.6, 1.4); burst('bandpass', 900, 0.35, 0.7, 0.6); setTimeout(() => burst('lowpass', 400, 0.25, 2.5, 0.5), 150); },
 };
+
+// sirens wail (1000 +- 350 Hz every 4 s), louder up close and pitched up by a closing car (doppler);
+// the helicopter fades in over ~3 s once you're at three cars
+function lawAudio() {
+  if (!actx) return;
+  const t = actx.currentTime, wail = 1000 + 350 * Math.sin((clock / 4) * Math.PI * 2);
+  police.cars.forEach((c, i) => {
+    const s = sirens[i]; if (!s) return;
+    const d = Math.hypot(S.x - c.v.x, S.z - c.v.z), live = c.active && !muted;
+    const closing = ((c.v.vx - S.vx) * (S.x - c.v.x) + (c.v.vz - S.vz) * (S.z - c.v.z)) / Math.max(d, 1);   // m/s toward you
+    s.o.frequency.setTargetAtTime(wail * (343 / (343 - clamp(closing, -60, 60))), t, 0.05);
+    s.g.gain.setTargetAtTime(live ? Math.min(0.06, 2.5 / Math.max(d, 10)) : 0, t, 0.1);
+  });
+  heliG.gain.setTargetAtTime(chase.st.heli && !muted ? 0.12 : 0, t, 1);
+}
 
 // ---- smoke + clippings ------------------------------------------------------
 const smokeTex = (() => {
@@ -258,8 +290,24 @@ const hikers = buildHitchhikers(scene, assets.avatar, world.track, {
     SFX.thump(speed); burst('lowpass', 260, 0.5, 0.35, 1.5);
     SFX.voice(240, 480, 0.35, [[750, 5], [1150, 6]], 0.14); setTimeout(() => SFX.voice(520, 180, 0.7, [[700, 5], [1100, 6]], 0.12), 330);
     S.shake = Math.max(S.shake, 0.08); say(HIT_LINES[(Math.random() * HIT_LINES.length) | 0], 1.4);
+    for (const ev of chase.hitKid()) {
+      if (ev === 'spawn') { police.setCount(chase.st.cars, S); setTimeout(() => say(chase.st.cars === 1 ? 'COPS! Somebody saw that...' : 'More cops!', 2), 1400); }
+      if (ev === 'heli') setTimeout(() => say('Is that a helicopter?!', 2), 3400);
+    }
   },
   onBounce: (pos, v) => { SFX.thump(v * 1.5); puffSmoke(pos.clone().setY(0.1), v3b.set(0, 0.3, 0), 0.6, 4, { life: 1.2, s0: 0.15, s1: 0.8, a: 0.35, color: 0x9a8a70 }); },
+});
+
+// ---- the law: hit 3 kids and a cop car comes after you (6: two, 9: three and a helicopter) ----
+const chase = makeChase();
+const police = buildPolice(scene, assets, world, {
+  onWreck: (pos) => {
+    SFX.boom();
+    for (let k = 0; k < 10; k++) puffSmoke(v3.set(pos.x + (Math.random() - 0.5) * 2, 0.5 + Math.random(), pos.z + (Math.random() - 0.5) * 3), v3b.set(0, 3, 0), 9, 3, { life: 0.8, s0: 0.3, s1: 2.4, a: 0.95, color: k % 2 ? 0xff5a10 : 0xff9a20 });
+    puffSmoke(v3.set(pos.x, 1.2, pos.z), v3b.set(0, 3.5, 0), 3.5, 30, { life: 4, s0: 0.8, s1: 5, a: 0.7, color: 0x2a2522 });
+    say('Cop down!', 1.5);
+  },
+  onBump: (pos, v) => SFX.thump(v),
 });
 
 // ---- God: Alt+F+4 summons Him; He keeps pace in front of the car and restocks you through the roof ----
@@ -292,10 +340,11 @@ car.cabin.traverse((o) => { if (o.name === 'Wolf3D_Outfit_Top') o.material.clipp
 const S = {};
 function resetState() {
   Object.assign(S, { dist: 0, beatBest: false, crashT: 0, x: 1.7, z: 0, th: 0, vx: 0, vz: 0, steer: 0, yawRate: 0, pitch: 0, roll: 0, camTh: 0, shake: 0, msgT: 0, drunk: 0, yaw: 0, look: -0.34, restock: 0,
-    s: 0, lat: 1.7, ri: undefined, sPrev: undefined, drift: 0, gear: 1, shiftFrom: 1, shiftT: 0, rpm: 800, lurch: 0, chirpT: 0, tyreT: 0 });
+    s: 0, lat: 1.7, ri: undefined, sPrev: undefined, drift: 0, gear: 1, shiftFrom: 1, shiftT: 0, rpm: 800, lurch: 0, chirpT: 0, tyreT: 0, bustT: 0 });
   $('msg').style.opacity = 0;
 }
 resetState();
+S.autoMode = 'normal';                                                      // T: 'normal' | 'drift' (kept across R resets, like S.auto)
 
 // ---- the goal: miles down the road without crashing; best run kept in the browser ----
 // (v2: v1 bests were set on the old straight road)
@@ -343,9 +392,10 @@ addEventListener('keydown', (e) => {
   if (e.altKey && e.code === 'KeyF') e.preventDefault();          // don't open the browser menu
   if (e.altKey && e.code === 'Digit4' && keys.has('KeyF')) { e.preventDefault(); summonGod(); }   // Alt+F+4: God on demand
   if (e.code === 'KeyC') camMode = (camMode + 1) % 2;
-  if (e.code === 'KeyG') { S.auto = !S.auto; say(S.auto ? 'Autopilot ON: it drives, you drink (W A S D takes over)' : 'Autopilot off', 2); }
+  if (e.code === 'KeyG') { S.auto = !S.auto; say(S.auto ? `Autopilot ON (${S.autoMode}): it drives, you drink (W A S D takes over)` : 'Autopilot off', 2); }
+  if (e.code === 'KeyT') { S.autoMode = S.autoMode === 'drift' ? 'normal' : 'drift'; say(`Autopilot mode: ${S.autoMode === 'drift' ? 'DRIFT (flat out, sideways)' : 'Normal'}${S.auto ? '' : ' (press G)'}`, 2); }
   if (e.code === 'KeyF' && !e.altKey) setTimeScale(timeScale >= 8 ? 1 : timeScale * 2);
-  if (e.code === 'KeyR') { endRun(); resetState(); }
+  if (e.code === 'KeyR') { endRun(); resetState(); chase.reset(); police.setCount(0, S); $('msg').classList.remove('big'); }
   if (e.code === 'KeyH') $('hints').classList.toggle('faded');
   if (e.code === 'KeyM') { muted = !muted; if (master) master.gain.value = muted ? 0 : 1; }
   if (e.code === 'Backquote') driver.start('beer');
@@ -372,12 +422,13 @@ function hud(vf) {
   $('cigars').textContent = `${st.cigState === 'hand' ? `${Math.round((st.cigLen / 0.14) * 100)}%` : 'none lit'} · ${st.cigars} in box`;
   $('buzz').firstElementChild.style.width = Math.min(100, (S.drunk / DRUNK_MAX) * 100) + '%';
   $('gear').textContent = S.gear === 0 ? 'R' : S.gear;
+  const w = $('wanted'), k = chase.st.kids;
+  w.style.display = k ? 'block' : 'none';
+  if (k) w.textContent = `${'⭐'.repeat(chase.st.cars) || '·'} ${k} kid${k === 1 ? '' : 's'}`;
   $('mph').textContent = S.drunk > 2.5 && Math.sin(clock * 3.1) > 0.4 ? '??' : Math.round(Math.abs(vf) * 2.237 * (1 + (S.drunk > 1.5 ? Math.sin(clock * 5) * 0.3 : 0)));
 }
 
 // ---- simulation -------------------------------------------------------------
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-const angDiff = (a, b) => Math.atan2(Math.sin(a - b), Math.cos(a - b));
 let last = performance.now(), clock = 0;
 
 // crashing: anything solid -> fireball, the car's gone for a moment, then it respawns in the lane
@@ -398,6 +449,7 @@ function respawn() {                                                        // b
   const p = world.track.at(S.s || 0), lat = 1.7;
   Object.assign(S, { crashT: 0, x: p.x + Math.cos(p.h) * lat, z: p.z - Math.sin(p.h) * lat, th: p.h, vx: 0, vz: 0, steer: 0, yawRate: 0, camTh: p.h, drift: 0, ri: undefined, sPrev: undefined });
   car.root.visible = true;
+  if (chase.st.cars) police.replace(S);                                     // a crash doesn't end a chase: they're 250 m back
 }
 
 // ---- gearbox: an automatic 4-speed you can see and hear (the stick moves, the driver's hand works it) ----
@@ -431,84 +483,39 @@ function gearbox(dt, vf, throttle) {
   car.shifter.set(a[0] + (b[0] - a[0]) * smooth01((u - 0.35) / 0.25), a[1] * (1 - smooth01(u / 0.35)) + b[1] * smooth01((u - 0.6) / 0.4));
 }
 
-// G: the car drives itself (sober, whatever you've had): holds the lane 1.7 m left of the centre, swerves
-// across to line up with any hitchhiker still standing in the next 150 m, and slows for the tightest bend
-// coming up. Touch W/A/S/D to take over.
-function autopilot(f, vf) {
-  const tr = world.track, v = Math.abs(vf), sF = f.s + 1.4;                 // measured at the front axle
-  const kid = tr.itemsInS(f.s + 2, f.s + 150, 'hiker').find((h) => !h.state || h.state.mode === 'stand');
-  const lane = kid ? kid.lat : 1.7;
-  // Stanley lane-keeping (the classic self-driving-car controller): the bend's own steering angle, minus the
-  // heading error, plus the lane offset scaled down with speed
-  const kRoad = (tr.at(sF + v * 0.15 + 2).h - tr.at(sF + v * 0.15 - 2).h) / 4;   // signed curvature, + = bends left
-  const front = tr.at(sF), psi = angDiff(S.th, front.h);
-  const delta = Math.atan(T.wheelbase * kRoad) - psi + Math.atan((1.5 * (lane - f.lat)) / (v + 1));
-  const steer = clamp(delta / (T.steerMax / (1 + v * T.steerFalloff)), -1, 1);
-  let k = 0;                                                                // sharpest curvature (1/radius) in the next few seconds
-  for (let d = 0; d < 30 + v * 3; d += 4) k = Math.max(k, Math.abs(tr.at(f.s + d + 4).h - tr.at(f.s + d).h) / 4);
-  const vWant = Math.min(T.maxFwd * 0.9, Math.sqrt((T.latG * 0.7) / Math.max(k, 1e-4)));
-  return [clamp((vWant - vf) * 0.5, -1, 1), steer];
-}
+// G: the car drives itself (sober, whatever you've had); T picks Normal (tidy) or Drift (flat out, sideways).
+// Both line up with any hitchhiker still standing in the next 150 m. Touch W/A/S/D to take over.
 
 function step(dt) {
   if (S.crashT > 0) { if ((S.crashT -= dt) <= 0) respawn(); return 0; }
+  if (S.bustT > 0) {                                                        // BUSTED: sit there, then start over clean
+    S.vx = S.vz = 0;
+    if ((S.bustT -= dt) <= 0) { $('msg').classList.remove('big'); police.setCount(0, S); respawn(); }
+    return 0;
+  }
   let throttle = (down('KeyW', 'ArrowUp') ? 1 : 0) - (down('KeyS', 'ArrowDown') ? 1 : 0);
   let steerIn = (down('KeyA', 'ArrowLeft') ? 1 : 0) - (down('KeyD', 'ArrowRight') ? 1 : 0);
-  const handbrake = down('Space');                                          // locks the rears
+  let handbrake = down('Space');                                            // locks the rears
   let vf = S.vx * Math.sin(S.th) + S.vz * Math.cos(S.th);                   // forward speed coming into this step
   // where the car is on the road: s along it, lat metres left of the centre
   const f = world.track.frame(S.x, S.z, S.ri);
   S.ri = f.i; S.s = f.s; S.lat = f.lat;
   if (S.auto && (throttle || steerIn)) { S.auto = false; say('You have control', 1.5); }
-  if (S.auto) [throttle, steerIn] = autopilot(f, vf);
+  if (S.auto) {
+    let apHB;
+    ({ throttle, steer: steerIn, handbrake: apHB } = autopilot(world.track, S, f, T, dt, { mode: S.autoMode, lane: huntLane(world.track, f.s) }));
+    handbrake = handbrake || apHB;
+  }
   if (S.invT > 0 && !S.auto) steerIn = -steerIn;                            // which way is left?
   if (S.drunk > 0.05 && !S.auto) steerIn = clamp(steerIn + Math.min(0.7, S.drunk * 0.22) * Math.sin(clock * 0.6 + Math.sin(clock * 0.23) * 3), -1, 1);
 
-  // drift (arcade): the handbrake, or stamping on the brake into a bend, lets the back end go; it then
-  // holds for as long as you stay on the gas and keep steering, and tidies itself up when you stop
-  let dWant = 0;
-  if (handbrake && Math.abs(vf) > 6) dWant = 1;
-  else if (!S.auto && throttle < 0 && vf > 12 && Math.abs(steerIn) > 0.5) dWant = 0.8;
-  else if (S.drift > 0.15 && throttle > 0 && steerIn && Math.abs(vf) > 6) dWant = 0.7;
-  const drift0 = S.drift;
-  S.drift += (dWant - S.drift) * Math.min(1, (dWant > S.drift ? 6 : 1.8) * dt);
-  if (drift0 < 0.4 && S.drift >= 0.4) SFX.chirp(1);
-
-  // steering: the body yaws first, then the tyres drag the velocity round after it (less so in a drift)
-  const lock = T.steerMax / (1 + Math.abs(vf) * T.steerFalloff);
-  const want = steerIn * lock, dSt = T.steerRate * dt;
-  S.steer += clamp(want - S.steer, -dSt, dSt);
-  if (!steerIn) S.steer *= Math.exp(-5 * dt);
-  const kick = handbrake ? steerIn * 1.3 * Math.sign(vf) : 0;               // a yanked handbrake swings the tail
-  const kin = ((vf * Math.tan(S.steer)) / T.wheelbase) * (1 + 1.7 * S.drift) + kick;
-  const cap = (T.latG * (1 + 2.2 * S.drift)) / Math.max(1, Math.abs(vf)) + Math.abs(kick);
-  S.yawRate = (S.yawRate || 0) + (clamp(kin, -cap, cap) - (S.yawRate || 0)) * Math.min(1, T.yawResp * dt);
-  S.th += S.yawRate * dt;
-  const nx = Math.sin(S.th), nz = Math.cos(S.th);
-  vf = S.vx * nx + S.vz * nz;
-  let latx = S.vx - nx * vf, latz = S.vz - nz * vf;
-  const vf0 = vf, slip = Math.atan2(Math.hypot(latx, latz), Math.abs(vf) + 0.01);
-  if (slip > 0.96) S.yawRate *= Math.exp(-6 * dt);                          // ~55 deg is as sideways as it gets
-
-  // longitudinal: power fades toward top speed; coast = rolling + air drag; no drive while a gear goes in
+  // the car itself (vehicle.js): drift, steering, power, grip; no drive while a gear goes in
   const power = S.shiftT > 0 && S.gear > S.shiftFrom ? 0 : 1;
-  if (throttle) {
-    const opposing = throttle * vf < -0.05;
-    vf += throttle * (opposing ? T.brake : T.accel * power * Math.max(0.1, 1 - Math.abs(vf) / T.maxFwd)) * dt;
-  } else {
-    const f2 = (T.coast + T.drag * vf * vf) * dt;
-    vf = Math.abs(vf) <= f2 ? 0 : vf - Math.sign(vf) * f2;
-  }
-  if (handbrake) { const f2 = 7 * dt; vf = Math.abs(vf) <= f2 ? 0 : vf - Math.sign(vf) * f2; }
-  // lateral grip; in a drift most of the sideways speed the tyres scrub off is handed back as forward speed
-  const lat0 = Math.hypot(latx, latz), g = Math.exp(-T.grip * (1 - 0.85 * S.drift) * dt);
-  latx *= g; latz *= g;
-  if (S.drift > 0 && vf) vf += Math.sign(vf) * lat0 * (1 - g) * 0.7 * S.drift;
-  vf = clamp(vf, -T.maxRev, T.maxFwd);
+  const r = drive(S, { throttle, steer: steerIn, handbrake, power, brakeDrift: !S.auto }, dt, T);
+  if (r.drift0 < 0.4 && S.drift >= 0.4) SFX.chirp(1);
+  vf = r.vf;
+  const vf0 = r.vf0, slip = r.slip, nx = Math.sin(S.th), nz = Math.cos(S.th);
   gearbox(dt, vf, throttle);
-
-  S.vx = nx * vf + latx; S.vz = nz * vf + latz;
-  S.x += S.vx * dt; S.z += S.vz * dt;
   const ds = f.s - (S.sPrev ?? f.s); S.sPrev = f.s;                         // progress along the road
   if (ds > 0 && ds < 10 && Math.abs(f.lat) < 15) S.dist += ds;
   for (const d of [1.3, -1.2]) {                                            // nose and tail circles vs trees / posts / poles / signs
@@ -653,6 +660,13 @@ function sim(dt) {
   if (S.drunk > 0.3 && (S.hicT = (S.hicT ?? 5) - dt) <= 0) { S.hicT = 3 + Math.random() * 7 / S.drunk; SFX.hic(); S.shake = Math.max(S.shake, 0.02 * S.drunk); say('*hic*', 0.7); }
   $('hud').style.transform = S.drunk > 0.2 ? `rotate(${(Math.sin(clock * 0.9) * S.drunk * 3).toFixed(2)}deg)` : '';
   hikers.update(dt, S.s);
+  police.update(dt, S, clock);
+  if (!(S.crashT > 0) && !(S.bustT > 0) && !overlayUp()) {
+    const ev = chase.update(dt, Math.hypot(S.vx, S.vz), police.status(S));
+    if (ev === 'bust') { S.bustT = 2.5; police.popOut(S); SFX.thump(6); $('msg').classList.add('big'); say('🚨 BUSTED! 🚨', 2.5); }
+    if (ev === 'escape') { police.setCount(0, S); say('You lost them 😎', 2.5); }
+  }
+  lawAudio();
   updateSmoke(dt); updateShards(dt);
   return vf;
 }
@@ -682,6 +696,6 @@ function warmUp() {
 warmUp();
 requestAnimationFrame(frame);
 // debug handle for headless checks; step(n, dt) advances the game when rAF is paused (hidden tab)
-window.__car = { S, T, keys, car, driver, world, god, hikers, summonGod, camera, renderer, startGame, showMenu, setTimeScale, setCam: (m) => { camMode = m; },
+window.__car = { S, T, keys, car, driver, world, god, hikers, chase, police, summonGod, camera, renderer, startGame, showMenu, setTimeScale, setCam: (m) => { camMode = m; },
   step: (n = 1, dt = 1 / 60) => { for (let i = 0; i < n; i++) tick(last + dt * 1000); },
   cam: (p, t) => { debugCam = p ? { p: new THREE.Vector3(...p), t: new THREE.Vector3(...t) } : null; } };

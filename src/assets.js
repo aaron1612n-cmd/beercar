@@ -1,5 +1,5 @@
 // Loads the downloaded assets (src/assets): the Poly Haven HDRI sky, bark / ground PBR textures,
-// photo leaves, the rigged Ready Player Me driver and the Camaro.
+// photo leaves, the rigged Ready Player Me driver, the Camaro and the police Crown Vic.
 // Also derives what the scene needs from them: the sun direction (brightest
 // HDR pixel), the horizon colour for fog, and leaf-cluster card textures
 // composited from the individual photo leaves.
@@ -80,7 +80,7 @@ function analyseSky(tex) {
 }
 
 export async function loadAssets(renderer, progress = () => {}) {
-  let done = 0; const N = 16;
+  let done = 0; const N = 17;
   const tick = (x) => { progress(++done / N); return x; };
   const maxAniso = renderer.capabilities.getMaxAnisotropy();
   const tl = new THREE.TextureLoader();
@@ -90,10 +90,11 @@ export async function loadAssets(renderer, progress = () => {}) {
     return tick(t);
   });
   const hdrL = new HDRLoader().setDataType(THREE.FloatType);
-  const [hdr, gltf, camaro, barkD, barkN, barkR, grD, grN, grR, leafD, leafA] = await Promise.all([
+  const [hdr, gltf, camaro, police, barkD, barkN, barkR, grD, grN, grR, leafD, leafA] = await Promise.all([
     hdrL.loadAsync(url('sky_2k.hdr')).then(tick),
     new GLTFLoader().loadAsync(url('readyplayer.me.glb')).then(tick),
     new GLTFLoader().loadAsync(url('camaro.glb')).then(tick),
+    new GLTFLoader().loadAsync(url('police.glb')).then(tick),
     tex('bark_diff.jpg', true), tex('bark_nor_gl.jpg'), tex('bark_rough.jpg'),
     tex('ground_diff.jpg', true), tex('ground_nor_gl.jpg'), tex('ground_rough.jpg'),
     loadImage(url('leaves_diff.jpg')).then(tick), loadImage(url('leaves_alpha.png')).then(tick),
@@ -106,5 +107,5 @@ export async function loadAssets(renderer, progress = () => {}) {
   for (let i = 0; i < 4; i++) cc.getContext('2d').drawImage(leafCluster(atlas, { leaves: 75 }), (i % 2) * 512, (i >> 1) * 512);
   const canopy = canvasTexture(cc);
   tick(); tick();
-  return { hdr, sky, avatar: gltf, camaro, bark: { map: barkD, normalMap: barkN, roughnessMap: barkR }, ground: { map: grD, normalMap: grN, roughnessMap: grR }, canopy };
+  return { hdr, sky, avatar: gltf, camaro, police, bark: { map: barkD, normalMap: barkN, roughnessMap: barkR }, ground: { map: grD, normalMap: grN, roughnessMap: grR }, canopy };
 }

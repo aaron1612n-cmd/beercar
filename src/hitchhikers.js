@@ -11,7 +11,7 @@ const TEES = [[0xc8261c, 0xf2ede0], [0x1f4fa8, 0xf2d43a], [0x2d8a3a, 0xf2ede0], 
 const CAP = ['#d8261c', '#f2c414', '#1f5fc8', '#2d9a3a'];
 const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z), Q = () => new THREE.Quaternion();
 const UP = V(0, 1, 0);
-const SIZE = 0.62;                       // they're kids: ~1.1 m tall
+export const SIZE = 0.62;                // they're kids: ~1.1 m tall
 const BODY_R = 0.8;                      // generous hit radius, so clipping one with a corner counts
 
 // a t-shirt with horizontal stripes, keyed off height in the mesh's own (bind-pose, metres, y-up) space
@@ -53,37 +53,46 @@ function propellerCap() {
   return cap;
 }
 
+// One kid cloned from the avatar: `top(oldMaterial)` dresses the shirt, `bottom` colours the trousers and
+// `hat` goes on the crown. The group isn't in the scene yet; it's hung off the hips and scaled to SIZE.
+// (Cop cars reuse this for their kid cops.)
+export function makeKid(gltf, { top, bottom, hat }) {
+  const body = clone(gltf.scene);
+  body.position.set(0, 0, 0); body.quaternion.identity(); body.scale.setScalar(1);
+  body.traverse((o) => {
+    if (!o.isMesh) return;
+    o.visible = true; o.castShadow = true; o.frustumCulled = false;
+    if (o.name === 'Wolf3D_Outfit_Top') o.material = top(o.material);
+    else if (o.name === 'Wolf3D_Outfit_Bottom') { o.material = o.material.clone(); o.material.map = null; o.material.color.set(bottom); }
+    else if (o.name === 'Wolf3D_Hair' || o.name === 'Wolf3D_Headwear') o.visible = false;   // the hat goes on instead
+    else o.material = o.material.clone();
+    o.material.clippingPlanes = null;
+  });
+  const B = {}, rest = new Map();
+  body.traverse((o) => { if (o.isBone) { B[o.name] = o; rest.set(o, o.quaternion.clone()); } });
+  const g = new THREE.Group(); g.add(body); g.visible = false;
+  // hang the body off its hips so it tumbles about its middle
+  g.updateMatrixWorld(true);
+  const hips = B.Hips.getWorldPosition(V()), toe = B.LeftToeBase.getWorldPosition(V());
+  body.position.sub(hips);
+  // the hat sits on the crown: up = toward HeadTop_End, peak = the way the face points (+z in the rest pose)
+  g.updateMatrixWorld(true);
+  const headQ = B.Head.getWorldQuaternion(Q()).invert();
+  const up = B.HeadTop_End.position.clone().normalize(), fwd = V(0, 0, 1).applyQuaternion(headQ);
+  const right = V().crossVectors(up, fwd).normalize(); fwd.crossVectors(right, up);
+  hat.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, fwd));
+  hat.position.copy(B.HeadTop_End.position).multiplyScalar(0.7);
+  B.Head.add(hat);
+  g.scale.setScalar(SIZE);
+  return { g, body, B, rest, hat, standH: (hips.y - toe.y + 0.04) * SIZE };
+}
+
 export function buildHitchhikers(scene, gltf, track, hooks) {
   const pool = [];
   for (let k = 0; k < POOL; k++) {
-    const body = clone(gltf.scene);
-    body.position.set(0, 0, 0); body.quaternion.identity(); body.scale.setScalar(1);
-    body.traverse((o) => {
-      if (!o.isMesh) return;
-      o.visible = true; o.castShadow = true; o.frustumCulled = false;
-      if (o.name === 'Wolf3D_Outfit_Top') o.material = stripedTee(o.material, TEES[k % TEES.length]);
-      else if (o.name === 'Wolf3D_Outfit_Bottom') { o.material = o.material.clone(); o.material.map = null; o.material.color.set(JEANS[k % JEANS.length]); }
-      else if (o.name === 'Wolf3D_Hair' || o.name === 'Wolf3D_Headwear') o.visible = false;   // the cap goes on instead
-      else o.material = o.material.clone();
-      o.material.clippingPlanes = null;
-    });
-    const B = {}, rest = new Map();
-    body.traverse((o) => { if (o.isBone) { B[o.name] = o; rest.set(o, o.quaternion.clone()); } });
-    const g = new THREE.Group(); g.add(body); g.visible = false; scene.add(g);
-    // hang the body off its hips so it tumbles about its middle
-    g.updateMatrixWorld(true);
-    const hips = B.Hips.getWorldPosition(V()), toe = B.LeftToeBase.getWorldPosition(V());
-    body.position.sub(hips);
-    // the cap sits on the crown: up = toward HeadTop_End, peak = the way the face points (+z in the rest pose)
-    g.updateMatrixWorld(true);
-    const cap = propellerCap(), headQ = B.Head.getWorldQuaternion(Q()).invert();
-    const up = B.HeadTop_End.position.clone().normalize(), fwd = V(0, 0, 1).applyQuaternion(headQ);
-    const right = V().crossVectors(up, fwd).normalize(); fwd.crossVectors(right, up);
-    cap.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, up, fwd));
-    cap.position.copy(B.HeadTop_End.position).multiplyScalar(0.7);
-    B.Head.add(cap);
-    g.scale.setScalar(SIZE);
-    pool.push({ g, body, B, rest, cap, standH: (hips.y - toe.y + 0.04) * SIZE, spot: null });
+    const kid = makeKid(gltf, { top: (m) => stripedTee(m, TEES[k % TEES.length]), bottom: JEANS[k % JEANS.length], hat: propellerCap() });
+    scene.add(kid.g);
+    pool.push({ ...kid, cap: kid.hat, spot: null });
   }
 
   // turn `bone` so the direction to `child` points along `dir` (person frame, before g is placed)
