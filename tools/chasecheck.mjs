@@ -17,8 +17,8 @@ const run = (c, secs, speed, cops) => { let ev = null; for (let t = 0; t < secs 
 { // no cops -> update never fires
   const c = makeChase(); c.hitKid(); check(run(c, 30, 0, []) === null, 'nothing happens without cops');
 }
-{ // escape: every cop > 300 m behind for 10 s, then everything resets
-  const c = makeChase(); for (let k = 0; k < 3; k++) c.hitKid();
+{ // escape: every cop > 300 m behind for 10 s (once they'd caught up), then everything resets
+  const c = makeChase(); for (let k = 0; k < 3; k++) c.hitKid(); c.update(0.1, 30, [{ gap: 100, dist: 100, contact: false }]); 
   check(run(c, 9.5, 30, [far]) === null, 'escaped too early');
   check(c.update(0.6, 30, [far]) === 'escape', 'no escape after 10 s');
   check(c.st.kids === 0 && c.st.cars === 0 && !c.st.heli, 'escape resets');
@@ -40,8 +40,13 @@ const run = (c, secs, speed, cops) => { let ev = null; for (let t = 0; t < secs 
   check(run(c, 0.3, 1, [close]) === 'bust', 'not busted after 1 s stopped');
 }
 { // all cops wrecked (empty list) counts as lost
-  const c = makeChase(); for (let k = 0; k < 3; k++) c.hitKid();
+  const c = makeChase(); for (let k = 0; k < 3; k++) c.hitKid(); c.update(0.1, 30, [{ gap: 100, dist: 100, contact: false }]); 
   check(run(c, 10.5, 30, []) === 'escape', 'wrecking every cop should let you escape');
+}
+{ // cops still on their way (spawned further back than 300 m) don't hand you a free escape
+  const c = makeChase(); for (let k = 0; k < 3; k++) c.hitKid();
+  check(run(c, 30, 30, [far]) === null, 'escaped from cops that never caught up');
+  check(run(c, 30, 30, []) === null, 'escaped because the only cop wrecked on its way');
 }
 console.log(fails ? `${fails} FAILURES` : 'ALL PASS');
 process.exit(fails ? 1 : 0);

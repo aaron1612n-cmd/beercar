@@ -291,7 +291,7 @@ const hikers = buildHitchhikers(scene, assets.avatar, world.track, {
     SFX.voice(240, 480, 0.35, [[750, 5], [1150, 6]], 0.14); setTimeout(() => SFX.voice(520, 180, 0.7, [[700, 5], [1100, 6]], 0.12), 330);
     S.shake = Math.max(S.shake, 0.08); say(HIT_LINES[(Math.random() * HIT_LINES.length) | 0], 1.4);
     for (const ev of chase.hitKid()) {
-      if (ev === 'spawn') { police.setCount(chase.st.cars, S); setTimeout(() => say(chase.st.cars === 1 ? 'COPS! Somebody saw that...' : 'More cops!', 2), 1400); }
+      if (ev === 'spawn') { police.setCount(chase.st.cars, S); setTimeout(() => say(chase.st.cars === 1 ? 'Somebody called the cops... hear that?' : 'More cops on the way!', 2.5), 1400); }
       if (ev === 'heli') setTimeout(() => say('Is that a helicopter?!', 2), 3400);
     }
   },
@@ -448,7 +448,7 @@ function respawn() {                                                        // b
   const p = world.track.at(S.s || 0), lat = 1.7;
   Object.assign(S, { crashT: 0, x: p.x + Math.cos(p.h) * lat, z: p.z - Math.sin(p.h) * lat, th: p.h, vx: 0, vz: 0, steer: 0, yawRate: 0, camTh: p.h, drift: 0, ri: undefined, sPrev: undefined });
   car.root.visible = true;
-  if (chase.st.cars) police.replace(S);                                     // a crash doesn't end a chase: they're 250 m back
+  if (chase.st.cars) police.replace(S);                                     // a crash doesn't end a chase: they're sent back to the start line
 }
 
 // ---- gearbox: an automatic 4-speed you can see and hear (the stick moves, the driver's hand works it) ----

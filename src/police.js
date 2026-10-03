@@ -1,8 +1,8 @@
 // Cop cars: a pool of three Crown Vics ("Police car" by Mateusz Woliński, CC-BY-4.0:
 // https://sketchfab.com/3d-models/police-car-9166b13b6ae341f4bfc093edb71d74f4) with a kid at the wheel and
-// a kid riding shotgun. They drive on the same physics as the Camaro (vehicle.js) under the Normal
-// autopilot at full top speed, pushing 6 m/s past the safe corner speed while they're behind you. Hit something solid over 10 mph
-// and they wreck; the slot refills 20 s later if you're still wanted.
+// a kid riding shotgun. They drive on the same physics as the Camaro (vehicle.js), pursuit-tuned, under the
+// autopilot with braking planned per bend. They set off 450 m back and reel you in. Hit something solid over
+// 10 mph and they wreck; the slot refills 20 s later if you're still wanted.
 // Origin = ground under the middle of the car, +Z = forward, +X = the driver's LEFT (as car.js).
 import * as THREE from 'three';
 import { clone } from 'three/examples/jsm/utils/SkeletonUtils.js';
@@ -14,8 +14,11 @@ import { makeKid } from './hitchhikers.js';
 // x -0.44 / z +0.075, tyres touching y 0.02. 0.82 makes it 5.5 m with 0.32 m wheels 2.94 m apart.
 const SCALE = 0.82, OFFSET = [0.36, -0.02, -0.06], WHEEL_R = 0.324;
 const SEAT = [0.38, 0.62, -0.2];                       // driver's hips (passenger mirrors x)
-const TC = { ...T, maxFwd: 43, accel: 7.5, wheelbase: 2.94 };   // a touch faster on the straight: you lose them in the bends
-const POOL = 3, BACK = 250, REFILL = 20, CRASH_V = 4.47, R = 0.9;
+// pursuit-tuned: quicker than the Camaro everywhere (top speed, pull, grip), so once they're out they reel
+// you in; they start BACK m behind, so there's a spell of hearing them coming first
+// (from 450 m back they catch the autopilot in ~30-65 s with no wrecks: scratch sim over 5 tracks)
+const TC = { ...T, maxFwd: 58, accel: 12, latG: 12.5, wheelbase: 2.94 };
+const POOL = 3, BACK = 450, REFILL = 20, CRASH_V = 4.47, R = 0.9;
 const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
 
 // navy uniform shirt, police cap with a black peak and a gold badge
@@ -99,7 +102,9 @@ export function buildPolice(scene, assets, world, hooks = {}) {
   scene.add(red, blue);
 
   function place(c, s, speed) {
-    const p = tr.at(Math.max(-290, s)), lat = 1.7;                        // track.js lays 300 m of road behind the start
+    s = Math.max(-290, s);                                                  // track.js lays 300 m of road behind the start
+    const p = tr.at(s), lat = 1.7;
+    c.s = s; c.lat = lat;
     Object.assign(c.v, { x: p.x + Math.cos(p.h) * lat, z: p.z - Math.sin(p.h) * lat, th: p.h, vx: Math.sin(p.h) * speed, vz: Math.cos(p.h) * speed, steer: 0, yawRate: 0, drift: 0, ri: undefined });
     c.active = true; c.wreckT = 0; c.root.visible = true;
     c.root.position.set(c.v.x, 0, c.v.z); c.root.rotation.y = c.v.th;
@@ -126,11 +131,10 @@ export function buildPolice(scene, assets, world, hooks = {}) {
       if (!c.active) continue;
       const f = tr.frame(c.v.x, c.v.z, c.v.ri); c.v.ri = f.i; c.s = f.s; c.lat = f.lat;
       const gap = P.s - f.s, dist = Math.hypot(P.x - c.v.x, P.z - c.v.z);
-      // behind you they push past the safe corner speed to close in (6 m/s when far back, so they sometimes run
-      // wide and wreck; 2 m/s on your bumper so they stay on the road to ram);
-      // within 60 m they line up on your lane, and inside 20 m they swerve hard into you to ram
+      // flat out until they have to brake for a bend (brakeA), using most of their grip; on your bumper they
+      // push 2 m/s past that; within 60 m they line up on your lane, and inside 20 m they swerve hard into you
       const a = P.bustT > 0 ? { throttle: speedOf(c.v) > 0.5 ? -1 : 0, steer: 0, handbrake: false }   // got you: pull up
-        : autopilot(tr, c.v, f, TC, { lane: dist < 60 ? P.lat : 1.7, top: 1, boost: gap > 25 ? 6 : gap > -2 ? 2 : 0, laneK: dist < 20 ? 6 : 1.5 });
+        : autopilot(tr, c.v, f, TC, { lane: dist < 60 ? P.lat : 1.7, top: 1, boost: gap > -2 && gap < 25 ? 2 : 0, laneK: dist < 20 ? 6 : 1.5, grip: 0.9, brakeA: 9 });
       const r = drive(c.v, { ...a, power: 1, brakeDrift: false }, dt, TC);
       // trees / posts / poles: wreck above 10 mph, bounce off below
       const nx = Math.sin(c.v.th), nz = Math.cos(c.v.th);

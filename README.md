@@ -25,9 +25,9 @@ Drive a '67 Camaro down an endless winding road. Chug beer, smoke cigars, don't 
 
 Hit a tree, post or telegraph pole over 10 mph and the car blows up.
 
-**The law:** hitchhiker kids stand in the road. Hit 3 and a cop car comes after you, 6 brings a second,
+**The law:** hitchhiker kids stand in the road. Hit 3 and somebody calls the cops: a car sets off from way back (listen for the siren) and it is faster than you. 6 brings a second,
 9 a third (and you'll hear a helicopter). The cops are kids too. Stay more than 300 m ahead of all of them
-for 10 seconds to lose them; let one ram you, or sit still next to one, and you're BUSTED. Cops that hit
+for 10 seconds, once they have caught up, to lose them; let one ram you, or sit still next to one, and you're BUSTED. Cops that hit
 something at speed wreck.
 
 (The fruit-fly-brain driving mode was removed; it's in commit 3861371.)

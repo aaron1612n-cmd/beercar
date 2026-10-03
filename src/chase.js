@@ -1,12 +1,13 @@
 // The wanted level: every hitchhiker you hit counts. 3 brings a cop car, 6 a second, 9 a third plus a
-// helicopter overhead. Lose them (every cop > 300 m back for 10 s, or all wrecked) or get busted (touched,
+// helicopter overhead. Once they've caught up to within 300 m, lose them (every cop > 300 m back for 10 s,
+// or all wrecked) or get busted (touched,
 // or sat still next to one for a second); either way the slate is wiped. Pure: main.js does the showing.
 export const WANTED = [3, 6, 9], ESCAPE_GAP = 300, ESCAPE_T = 10, BUST_DIST = 4, BUST_SPEED = 3, BUST_T = 1;
 
 export function makeChase() {
   const st = { kids: 0, cars: 0, heli: false };
-  let loseT = 0, stillT = 0;
-  function reset() { Object.assign(st, { kids: 0, cars: 0, heli: false }); loseT = 0; stillT = 0; }
+  let loseT = 0, stillT = 0, engaged = false;                              // engaged: a cop has got within ESCAPE_GAP
+  function reset() { Object.assign(st, { kids: 0, cars: 0, heli: false }); loseT = 0; stillT = 0; engaged = false; }
   function hitKid() {
     st.kids++;
     const ev = [], want = WANTED.filter((k) => st.kids >= k).length;
@@ -20,7 +21,8 @@ export function makeChase() {
     if (cops.some((c) => c.contact)) { reset(); return 'bust'; }
     stillT = speed < BUST_SPEED && cops.some((c) => c.dist < BUST_DIST) ? stillT + dt : 0;
     if (stillT >= BUST_T) { reset(); return 'bust'; }
-    loseT = cops.every((c) => c.gap > ESCAPE_GAP) ? loseT + dt : 0;
+    if (cops.some((c) => c.gap <= ESCAPE_GAP)) engaged = true;              // they start further back than that: no free escape
+    loseT = engaged && cops.every((c) => c.gap > ESCAPE_GAP) ? loseT + dt : 0;
     if (loseT >= ESCAPE_T) { reset(); return 'escape'; }
     return null;
   }
